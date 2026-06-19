@@ -1,86 +1,57 @@
-# Slack to Google Chat Migration Configuration
+# Updated config.yaml.example as per Sahaj Customization
+# -------------------------------------------------------
+# Slack → GChat Migration Configuration (slack-chat-migrator / Tool B)
+# Deployed as /app/config.yaml inside the Cloud Run container.
+# Override individual channels at the top level of this file.
 
-# Shared Drive configuration for storing attachments
-# Using a shared drive is recommended for organization-wide access
+# Shared Drive for file attachments.
+# Tool B uploads Slack files here and links them in migrated messages.
 shared_drive:
-  # Option 1: Specify an existing shared drive by ID
-  # id: "0AInA6b6Ej1Q2Uk9PVA"  # Replace with your shared drive ID
-
-  # Option 2: Specify a shared drive by name (will be created if it doesn't exist)
   name: "Imported Slack Attachments"
 
-  # If neither id nor name is specified, the tool will create a new shared drive
-  # with the name "Imported Slack Attachments"
+# Channels to exclude from migration (exact Slack channel names, without '#').
+# Add DM-style directory names ("Dxxxxxxx", "mpdm-xxx") here if the export
+# includes DMs and you want to skip them.
+exclude_channels: []
 
-# Optional: Channels to exclude from migration (by name)
-exclude_channels:
-  - "random"        # Example: Skip the random channel
-  - "shitposting"   # Example: Skip off-topic channels
-  # - "general"     # Uncomment to exclude more channels as needed
+# Channels to include — when specified, ONLY these channels are migrated.
+# Leave empty to migrate everything in the export (minus exclude_channels).
+# Example: include only two channels for a pilot run:
+#   include_channels:
+#     - general
+#     - engineering
+include_channels: []
 
-# Space mapping configuration
-# The migrator uses the Google Chat API to discover existing spaces. If multiple spaces
-# have the same channel name, you need to specify which space ID to use for which channel.
+# Normalise all Slack profile emails to @sahaj.ai.
+# This ensures users who registered in Slack with a personal address still
+# resolve to their Google Workspace account.
+email_domain_override: "sahaj.ai"
+
+# Manual overrides: map Slack user IDs that have no profile email to a
+# known Google Workspace address. Run `make validate` first — the dry-run
+# report lists all unmapped users with their Slack IDs.
 #
-# When duplicate spaces are found, the migrator will:
-# 1. Skip those specific channels (not abort the entire migration)
-# 2. Mark these channels as failed in the migration report
-# 3. Log detailed information about each space to help you choose
-# 4. Provide exact configuration entries to copy into this file
-#
-# You can then add the mappings below and re-run the migration for just those channels.
-space_mapping:
-  # Format: "channel_name": "space_id"  (without the "spaces/" prefix)
-  # Example for channel "general" with space ID "AAAAAgcE123":
-  # "general": "AAAAAgcE123"
+# user_mapping_overrides:
+#   "UXXXXXXXXX": "contractor@sahaj.ai"
+#   "UYYYYYYYYY": "bot-account@sahaj.ai"
+user_mapping_overrides: {}
 
-# Optional: Override email domains for user mapping
-# If not specified, emails from users.json will be used directly
-# RECOMMENDED: Set this to your Google Workspace domain (e.g., "company.com")
-# to ensure all mapped users are from your workspace
-email_domain_override: ""  # e.g. "company.com"
-
-# Optional: User mapping overrides
-# Use this to manually map specific Slack user IDs to Google Workspace emails
-# This takes precedence over the automatic mapping from users.json
-# You can find Slack user IDs in the users.json file from your export
-user_mapping_overrides:
-  # U12345678: "user@example.com"
-  # U87654321: "another_user@example.com"
-
-# User handling options
-
-# Whether to skip importing bot messages and reactions
-# When true, all bot messages and reactions will be excluded from migration
-# When false (default), bot messages will be migrated if user mappings exist
+# Skip bot messages and reactions (Slackbot, workflow bots, integrations).
 ignore_bots: true
 
-# Error handling options
-
-# Whether to abort the entire migration after encountering errors in a channel
-# If true, migration will stop after the first channel with errors
-# If false, migration will continue to process other channels even if errors occur
+# Error handling
 abort_on_error: false
-
-# Maximum percentage of failed messages allowed before skipping a channel
-# If the failure rate exceeds this percentage, the channel processing will stop
 max_failure_percentage: 10
+import_completion_strategy: "skip_on_error"  # or "force_complete"
+cleanup_on_error: false
 
-# Strategy for completing import mode when errors occur
-# Options:
-#   "skip_on_error" (default) - Don't complete import mode if there were errors
-#   "force_complete" - Complete import mode even if there were errors
-import_completion_strategy: "skip_on_error"
-
-# Whether to delete spaces that had errors during migration
-# If true, spaces with errors will be deleted during cleanup
-# If false, spaces with errors will be kept (you can complete import manually)
-cleanup_on_error: true
-
-# Advanced options
-
-# Maximum number of retry attempts for API calls
+# Retry settings
 max_retries: 5
+retry_delay: 2
 
-# Initial delay between retry attempts (in seconds)
-retry_delay: 1.0
+# Space naming: set to "" to use the bare Slack channel name (no "Slack #" prefix).
+space_name_prefix: ""
+
+# Make migrated spaces publicly discoverable (DISCOVERABLE) after completing import.
+# Set to false to leave spaces PRIVATE (invite-only).
+make_spaces_discoverable: true
