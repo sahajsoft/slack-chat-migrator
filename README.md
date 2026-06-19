@@ -829,6 +829,27 @@ Progress is saved between runs, so you can resume if interrupted.
 
 > **Note:** After any setup method, you still need to complete domain-wide delegation in your Google Workspace Admin Console.
 
+### Sahaj Fork — Syncing with Upstream
+
+This branch (`sahaj/customizations`) contains Sahaj-specific changes on top of the upstream project.
+The branch is maintained as a **single commit** representing all customisations, rebased on the latest upstream `main`.
+
+To pull in upstream updates:
+
+```bash
+# 1. Fetch and merge upstream changes into local main
+git pull upstream main
+
+# 2. Rebase the customisations branch on top of the updated main
+git rebase main sahaj/customizations
+
+# 3. Squash into one commit and force-push to keep the branch history clean
+git push origin sahaj/customizations --force-with-lease
+```
+
+> The `--force-with-lease` flag is safe here because `sahaj/customizations` is a Sahaj-owned branch;
+> it ensures you don't accidentally overwrite work pushed by someone else since your last fetch.
+
 ### License
 
 MIT
