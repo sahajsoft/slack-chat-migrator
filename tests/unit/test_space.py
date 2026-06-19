@@ -56,6 +56,7 @@ def _make_ctx(
         channels_meta=channels_meta or {},
         channel_id_to_name={},
         channel_name_to_id={},
+        deleted_user_display_names={},
     )
 
 
@@ -291,7 +292,7 @@ class TestCreateSpace:
         assert body["importMode"] is True
         assert body["spaceType"] == "SPACE"
         assert body["spaceThreadingState"] == "THREADED_MESSAGES"
-        assert body["displayName"] == "Slack #dev"
+        assert body["displayName"] == "dev"
 
     def test_channel_creation_time_included(self):
         """When channel metadata has 'created', createTime is set on the space."""

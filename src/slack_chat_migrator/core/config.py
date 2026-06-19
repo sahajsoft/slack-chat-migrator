@@ -82,6 +82,10 @@ class MigrationConfig:
     # Shared drive
     shared_drive: SharedDriveConfig = field(default_factory=SharedDriveConfig)
 
+    # Space naming and visibility
+    space_name_prefix: str = ""
+    make_spaces_discoverable: bool = False
+
     def __post_init__(self) -> None:
         """Validate configuration values after initialization."""
         if self.max_retries < 0:
@@ -120,6 +124,8 @@ class MigrationConfig:
             max_retries=data.get("max_retries", 3),
             retry_delay=data.get("retry_delay", 2),
             shared_drive=shared_drive,
+            space_name_prefix=data.get("space_name_prefix", ""),
+            make_spaces_discoverable=data.get("make_spaces_discoverable", False),
         )
 
 

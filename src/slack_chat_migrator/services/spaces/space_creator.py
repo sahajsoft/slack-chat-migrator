@@ -18,7 +18,6 @@ from slack_chat_migrator.constants import (
     HTTP_FORBIDDEN,
     IMPORT_MODE_DAYS_LIMIT,
     PERMISSION_DENIED_ERROR,
-    SPACE_NAME_PREFIX,
     SPACE_THREADING_STATE,
     SPACE_TYPE,
     SPACES_PAGE_SIZE,
@@ -132,7 +131,7 @@ def create_space(
     """
     # Get channel metadata
     meta = ctx.channels_meta.get(channel, {})
-    display_name = f"{SPACE_NAME_PREFIX}{channel}"
+    display_name = f"{ctx.config.space_name_prefix}{channel}"
 
     # Check if this is the general/default channel
     is_general = meta.get("is_general", False)

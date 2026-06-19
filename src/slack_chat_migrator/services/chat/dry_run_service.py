@@ -260,6 +260,7 @@ class DryRunSpaces:
         name: str = "",
         updateMask: str = "",
         body: dict[str, Any] | None = None,
+        useAdminAccess: bool = False,
     ) -> DryRunRequest:
         log_with_context(
             logging.DEBUG,

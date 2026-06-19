@@ -398,6 +398,7 @@ def convert_formatting(
     user_map: dict[str, str],
     state: MigrationState | None = None,
     unmapped_user_tracker: UnmappedUserTracker | None = None,
+    deleted_user_display_names: dict[str, str] | None = None,
 ) -> str:
     """
     Convert Slack-specific markdown to Google Chat compatible format.
@@ -407,6 +408,9 @@ def convert_formatting(
         user_map: A dictionary mapping Slack user IDs to Google Chat user IDs/emails
         state: Optional MigrationState for context (context.current_channel, context.current_message_ts)
         unmapped_user_tracker: Optional tracker for unmapped user mentions
+        deleted_user_display_names: Maps deactivated Slack user IDs to "Name (email)" strings.
+            When set, mentions of deleted users are rendered as plain text instead of
+            <users/email> tags (which Google Chat renders as empty <users/> for gone accounts).
 
     Returns:
         The formatted text with Slack mentions converted to Google Chat format
@@ -426,6 +430,12 @@ def convert_formatting(
             The Google Chat mention, or an ``@``-prefixed Slack UID fallback.
         """
         slack_user_id = match.group(1)
+
+        # Deactivated users: their Google Workspace accounts may be gone, so
+        # <users/email> would render as <users/> (blank). Use plain text instead.
+        if deleted_user_display_names and slack_user_id in deleted_user_display_names:
+            return f"@{deleted_user_display_names[slack_user_id]}"
+
         gchat_user_id = user_map.get(slack_user_id)
 
         if gchat_user_id:

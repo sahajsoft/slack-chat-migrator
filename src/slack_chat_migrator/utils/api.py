@@ -44,6 +44,7 @@ REQUIRED_SCOPES = [
     "https://www.googleapis.com/auth/chat.messages",
     "https://www.googleapis.com/auth/chat.spaces.readonly",
     "https://www.googleapis.com/auth/chat.memberships.readonly",  # For reading space member lists
+    "https://www.googleapis.com/auth/chat.admin.spaces",  # Required for useAdminAccess=True (space discoverability)
     "https://www.googleapis.com/auth/drive",  # Full Drive scope covers all drive.file permissions plus shared drives
 ]
 

@@ -44,6 +44,11 @@ class MigrationContext:
     # Bot user IDs excluded by ignore_bots (used to filter membership pipeline)
     bot_user_ids: frozenset[str]
 
+    # Deactivated Slack users: slack_user_id -> "Real Name (email@domain)"
+    # Their <@UID> mentions are rendered as plain text so Google Chat doesn't
+    # produce empty <users/> tags for accounts that no longer exist.
+    deleted_user_display_names: dict[str, str]
+
     # Channel metadata (from channels.json)
     channels_meta: dict[str, SlackChannel]  # channel_name -> channel data
     channel_id_to_name: dict[str, str]

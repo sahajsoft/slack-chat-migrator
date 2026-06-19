@@ -29,6 +29,7 @@ def _make_ctx(
     update_mode: bool = False,
     export_root: Path | None = None,
     config: MigrationConfig | None = None,
+    channels_meta: dict | None = None,
 ) -> MigrationContext:
     """Build a MigrationContext with sensible test defaults."""
     return MigrationContext(
@@ -44,7 +45,8 @@ def _make_ctx(
         user_map={},
         users_without_email=[],
         bot_user_ids=frozenset(),
-        channels_meta={},
+        deleted_user_display_names={},
+        channels_meta=channels_meta if channels_meta is not None else {},
         channel_id_to_name={},
         channel_name_to_id={},
     )
@@ -59,6 +61,8 @@ def _make_processor(
     max_failure_percentage: int = 10,
     export_root: Path | None = None,
     progress_tracker: ProgressTracker | None = None,
+    channels_meta: dict | None = None,
+    make_spaces_discoverable: bool = False,
 ) -> ChannelProcessor:
     """Create a ChannelProcessor with sensible test defaults."""
     config = MigrationConfig(
@@ -66,12 +70,14 @@ def _make_processor(
         cleanup_on_error=cleanup_on_error,
         import_completion_strategy=import_completion_strategy,
         max_failure_percentage=max_failure_percentage,
+        make_spaces_discoverable=make_spaces_discoverable,
     )
     ctx = _make_ctx(
         dry_run=dry_run,
         update_mode=update_mode,
         export_root=export_root,
         config=config,
+        channels_meta=channels_meta,
     )
 
     state = MigrationState()
@@ -683,6 +689,94 @@ class TestCompleteImportMode:
 
         processor.chat.complete_import.assert_called_once_with("spaces/S1")
         assert result is False
+
+    def test_public_slack_channel_becomes_discoverable(self):
+        """A public Slack channel (is_private=False) is patched to DISCOVERABLE after import."""
+        processor = _make_processor(
+            channels_meta={"general": {"is_private": False}},
+        )
+        processor.chat.complete_import.return_value = {}
+        processor.chat.patch_space.return_value = {}
+
+        result = processor._complete_import_mode("spaces/S1", "general", False)
+
+        assert result is False
+        processor.chat.patch_space.assert_called_once_with(
+            name="spaces/S1",
+            update_mask="accessSettings",
+            body={"accessSettings": {"accessState": "DISCOVERABLE"}},
+            use_admin_access=True,
+        )
+
+    def test_private_slack_channel_stays_private(self):
+        """A private Slack channel (is_private=True) is NOT patched to DISCOVERABLE."""
+        processor = _make_processor(
+            channels_meta={"general": {"is_private": True}},
+        )
+        processor.chat.complete_import.return_value = {}
+
+        result = processor._complete_import_mode("spaces/S1", "general", False)
+
+        assert result is False
+        processor.chat.patch_space.assert_not_called()
+
+    def test_make_spaces_discoverable_flag_overrides_private_channel(self):
+        """make_spaces_discoverable=True makes even private Slack channels DISCOVERABLE."""
+        processor = _make_processor(
+            channels_meta={"general": {"is_private": True}},
+            make_spaces_discoverable=True,
+        )
+        processor.chat.complete_import.return_value = {}
+        processor.chat.patch_space.return_value = {}
+
+        result = processor._complete_import_mode("spaces/S1", "general", False)
+
+        assert result is False
+        processor.chat.patch_space.assert_called_once_with(
+            name="spaces/S1",
+            update_mask="accessSettings",
+            body={"accessSettings": {"accessState": "DISCOVERABLE"}},
+            use_admin_access=True,
+        )
+
+    def test_missing_is_private_field_defaults_to_private(self):
+        """When is_private is absent in channel metadata, the space stays PRIVATE."""
+        processor = _make_processor(
+            channels_meta={"general": {"is_general": True}},  # no is_private key
+        )
+        processor.chat.complete_import.return_value = {}
+
+        result = processor._complete_import_mode("spaces/S1", "general", False)
+
+        assert result is False
+        processor.chat.patch_space.assert_not_called()
+
+    def test_empty_channels_meta_defaults_to_private(self):
+        """When channels_meta is empty (no metadata at all), the space stays PRIVATE."""
+        processor = _make_processor(channels_meta={})
+        processor.chat.complete_import.return_value = {}
+
+        result = processor._complete_import_mode("spaces/S1", "general", False)
+
+        assert result is False
+        processor.chat.patch_space.assert_not_called()
+
+    def test_patch_space_failure_on_public_channel_does_not_abort(self):
+        """A failed patch_space call on a public channel logs a warning but doesn't raise."""
+        from httplib2 import Response
+
+        processor = _make_processor(
+            channels_meta={"general": {"is_private": False}},
+        )
+        processor.chat.complete_import.return_value = {}
+        processor.chat.patch_space.side_effect = HttpError(
+            resp=Response({"status": "500"}), content=b"Server Error"
+        )
+
+        result = processor._complete_import_mode("spaces/S1", "general", False)
+
+        assert result is False  # patch failure should not set channel_had_errors
+        processor.chat.patch_space.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

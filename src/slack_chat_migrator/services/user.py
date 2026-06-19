@@ -38,6 +38,7 @@ def _process_single_user(
     ignore_bots: bool,
     overrides: dict[str, str],
     domain_override: str | None,
+    deleted_user_display_names: dict[str, str] | None = None,
 ) -> bool:
     """Process one user entry, updating user_map or users_without_email.
 
@@ -83,6 +84,17 @@ def _process_single_user(
         email = f"{username}@{domain_override}"
 
     user_map[user_id] = email
+
+    # Track deactivated users so their mentions render as readable plain text
+    # instead of <users/> (blank) when their Google Workspace account is gone.
+    if deleted_user_display_names is not None and user.get("deleted", False):
+        real_name = (
+            user.get("profile", {}).get("real_name")
+            or user.get("profile", {}).get("display_name")
+            or username
+        )
+        deleted_user_display_names[user_id] = f"{real_name} ({email})"
+
     return False
 
 
@@ -118,7 +130,7 @@ def _log_unmapped_users(users_without_email: list[dict[str, Any]]) -> None:
 
 def generate_user_map(
     export_root: Path, config: MigrationConfig
-) -> tuple[dict[str, str], list[dict[str, Any]], frozenset[str]]:
+) -> tuple[dict[str, str], list[dict[str, Any]], frozenset[str], dict[str, str]]:
     """Generate user mapping from users.json file.
 
     Args:
@@ -126,14 +138,16 @@ def generate_user_map(
         config: Configuration dictionary
 
     Returns:
-        Tuple of (user_map, users_without_email, bot_user_ids) where:
+        Tuple of (user_map, users_without_email, bot_user_ids, deleted_user_display_names) where:
         - user_map is a dictionary mapping Slack user IDs to email addresses
         - users_without_email is a list of dictionaries with info about users without emails
         - bot_user_ids is a frozenset of Slack user IDs that were ignored as bots
+        - deleted_user_display_names maps deactivated user IDs to "Name (email)" strings
     """
     user_map: dict[str, str] = {}
     users_without_email: list[dict[str, Any]] = []
     bot_user_ids: set[str] = set()
+    deleted_user_display_names: dict[str, str] = {}
     users = _load_users_json(export_root / "users.json")
 
     ignored_bots_count = 0
@@ -145,6 +159,7 @@ def generate_user_map(
             config.ignore_bots,
             config.user_mapping_overrides,
             config.email_domain_override,
+            deleted_user_display_names,
         )
         if was_bot:
             ignored_bots_count += 1
@@ -202,5 +217,10 @@ def generate_user_map(
             logging.INFO,
             f"Ignored {ignored_bots_count} bot users (ignore_bots enabled)",
         )
+    if deleted_user_display_names:
+        log_with_context(
+            logging.INFO,
+            f"Tracked {len(deleted_user_display_names)} deactivated users — their mentions will render as plain text",
+        )
 
-    return user_map, users_without_email, frozenset(bot_user_ids)
+    return user_map, users_without_email, frozenset(bot_user_ids), deleted_user_display_names

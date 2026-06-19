@@ -535,12 +535,7 @@ class TestLoadChannelsMeta:
 
 
 class TestSpaceNameHelpers:
-    """Tests for _get_space_name() and _get_all_channel_names()."""
-
-    def test_get_space_name(self, tmp_path):
-        m = _make_migrator(tmp_path)
-        assert m._get_space_name("general") == "Slack #general"
-        assert m._get_space_name("random") == "Slack #random"
+    """Tests for _get_all_channel_names()."""
 
     def test_get_all_channel_names(self, tmp_path):
         channels = [
@@ -582,6 +577,7 @@ def _make_channel_processor(
         channels_meta={},
         channel_id_to_name={},
         channel_name_to_id={},
+        deleted_user_display_names={},
     )
     state = MigrationState()
     return ChannelProcessor(

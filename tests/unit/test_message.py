@@ -47,6 +47,7 @@ def _make_ctx(
         channels_meta=channels_meta or {},
         channel_id_to_name={},
         channel_name_to_id={},
+        deleted_user_display_names={},
     )
 
 

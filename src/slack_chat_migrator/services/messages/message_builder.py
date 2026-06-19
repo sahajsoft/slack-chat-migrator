@@ -47,6 +47,31 @@ def build_user_map_with_overrides(
     return user_map_with_overrides
 
 
+def _build_custom_reaction_footnote(message: dict[str, Any]) -> str:
+    """Return a text summary of reactions that have no Unicode equivalent.
+
+    Google Chat reactions only accept Unicode emoji.  Custom Slack workspace
+    emoji (e.g. :TY:, :pepelaugh:) cannot be added via the API, so we
+    preserve them as a readable footnote on the message instead.
+
+    Returns an empty string when all reactions are standard Unicode emoji or
+    when there are no reactions.
+    """
+    import emoji as _emoji
+
+    parts: list[str] = []
+    for react in message.get("reactions", []):
+        name = react.get("name", "")
+        if not name:
+            continue
+        resolved = _emoji.emojize(f":{name}:", language="alias")
+        if resolved == f":{name}:":
+            count = len(react.get("users", []))
+            parts.append(f":{name}: ×{count}")
+
+    return "  ".join(parts)
+
+
 def build_message_payload(
     ctx: MigrationContext,
     state: MigrationState,
@@ -80,7 +105,14 @@ def build_message_payload(
         user_map_with_overrides,
         state=state,
         unmapped_user_tracker=getattr(user_resolver, "unmapped_user_tracker", None),
+        deleted_user_display_names=ctx.deleted_user_display_names,
     )
+
+    # Append custom Slack emoji reactions as a text footnote.
+    # These have no Unicode equivalent and cannot be added via the Reactions API.
+    custom_reaction_text = _build_custom_reaction_footnote(message)
+    if custom_reaction_text:
+        formatted_text = f"{formatted_text}\n\n_{custom_reaction_text}_"
 
     # For edited messages, add an edit indicator
     if is_edited:
@@ -114,6 +146,12 @@ def build_message_payload(
             else:
                 # Regular internal user - send directly
                 payload["sender"] = {"type": "HUMAN", "name": f"users/{internal_email}"}
+                # Deactivated users: impersonation fails at send time, so the message
+                # ends up posted by the admin with no visible original author.
+                # Prefix with attribution now so it always shows regardless of sender.
+                if user_id in ctx.deleted_user_display_names:
+                    display_name = ctx.deleted_user_display_names[user_id]
+                    final_text = f"*[From: {display_name}]*\n{formatted_text}"
         else:
             # This shouldn't happen if user_email exists, but handle it gracefully
             admin_email, attributed_text = user_resolver.handle_unmapped_user_message(

@@ -69,6 +69,7 @@ class ChatAdapter:
         name: str,
         update_mask: str,
         body: dict[str, Any],
+        use_admin_access: bool = False,
     ) -> dict[str, Any]:
         """Update a space.
 
@@ -76,14 +77,23 @@ class ChatAdapter:
             name: Space resource name.
             update_mask: Comma-separated field mask.
             body: Fields to update.
+            use_admin_access: When True, passes ``useAdminAccess=True`` to the
+                API, allowing a Workspace admin to update fields (such as
+                ``accessSettings``) that are otherwise restricted.  Requires the
+                ``chat.admin.spaces`` scope to be authorised in DWD.
 
         Returns:
             Updated space resource dict.
         """
+        kwargs: dict[str, Any] = {
+            "name": name,
+            "updateMask": update_mask,
+            "body": body,
+        }
+        if use_admin_access:
+            kwargs["useAdminAccess"] = True
         result: dict[str, Any] = (
-            self._svc.spaces()
-            .patch(name=name, updateMask=update_mask, body=body)
-            .execute()
+            self._svc.spaces().patch(**kwargs).execute()
         )
         return result
 

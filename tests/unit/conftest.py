@@ -43,6 +43,7 @@ def _make_ctx(**overrides: Any) -> MigrationContext:
         "channels_meta": {},
         "channel_id_to_name": {},
         "channel_name_to_id": {},
+        "deleted_user_display_names": {},
     }
     defaults.update(overrides)
     return MigrationContext(**defaults)

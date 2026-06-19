@@ -229,10 +229,12 @@ def _handle_send_result(
     """
     state.progress.migration_summary["messages_created"] += 1
 
-    # Store the message ID mapping for potential future edits
+    # Always store by plain ts so lookup by original timestamp works even for
+    # edited messages (edited messages previously only stored composite key).
     if message_name:
-        # For edited messages, store with a special key that includes the edit timestamp
+        state.messages.message_id_map[ts] = message_name
         if is_edited:
+            # Also store under the composite key for edit-aware lookups.
             edit_key = f"{ts}:edited:{edited_ts}"
             state.messages.message_id_map[edit_key] = message_name
             log_with_context(
@@ -242,8 +244,6 @@ def _handle_send_result(
                 ts=ts,
                 edited_ts=edited_ts,
             )
-        else:
-            state.messages.message_id_map[ts] = message_name
 
     # Store thread mapping for both parent messages and thread replies
     if message_name:
@@ -285,8 +285,8 @@ def _handle_send_result(
                     existing_thread_name = state.messages.thread_map[thread_ts_str]
                     if existing_thread_name != thread_name:
                         log_with_context(
-                            logging.WARNING,
-                            f"Thread name mismatch! Expected {existing_thread_name}, got {thread_name} for thread {thread_ts_str}",
+                            logging.DEBUG,
+                            f"Thread name mismatch: expected {existing_thread_name}, got {thread_name} for thread {thread_ts_str} (normal in dry-run)",
                             channel=channel,
                             ts=ts,
                             thread_ts=thread_ts_str,

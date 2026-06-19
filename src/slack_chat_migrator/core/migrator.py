@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from slack_chat_migrator.constants import SPACE_NAME_PREFIX
 from slack_chat_migrator.core.channel_processor import ChannelProcessor
 from slack_chat_migrator.core.checkpoint import (
     CheckpointData,
@@ -132,9 +131,12 @@ class SlackToChatMigrator:
         self.state.spaces.space_mapping = load_space_mapping(self.config_path)
 
         # Generate user mapping from users.json
-        self.user_map, self.users_without_email, self.bot_user_ids = generate_user_map(
-            self.export_root, self.config
-        )
+        (
+            self.user_map,
+            self.users_without_email,
+            self.bot_user_ids,
+            self.deleted_user_display_names,
+        ) = generate_user_map(self.export_root, self.config)
 
         # Initialize simple unmapped user tracking
         self.unmapped_user_tracker = initialize_unmapped_user_tracking()
@@ -189,6 +191,7 @@ class SlackToChatMigrator:
             user_map=self.user_map,
             users_without_email=self.users_without_email,
             bot_user_ids=self.bot_user_ids,
+            deleted_user_display_names=self.deleted_user_display_names,
             channels_meta=self.channels_meta,
             channel_id_to_name=self.channel_id_to_name,
             channel_name_to_id=self.channel_name_to_id,
@@ -352,10 +355,6 @@ class SlackToChatMigrator:
                 id_to_name = {ch["id"]: ch["name"] for ch in channels}
 
         return name_to_data, id_to_name
-
-    def _get_space_name(self, channel: str) -> str:
-        """Get a consistent display name for a Google Chat space based on channel name."""
-        return f"{SPACE_NAME_PREFIX}{channel}"
 
     def _get_all_channel_names(self) -> list[str]:
         """Get a list of all channel names from the export directory."""

@@ -862,6 +862,7 @@ class TestGetGcpService:
                     "https://www.googleapis.com/auth/chat.messages",
                     "https://www.googleapis.com/auth/chat.spaces.readonly",
                     "https://www.googleapis.com/auth/chat.memberships.readonly",
+                    "https://www.googleapis.com/auth/chat.admin.spaces",
                     "https://www.googleapis.com/auth/drive",
                 ],
                 abs=0,

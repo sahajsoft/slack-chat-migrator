@@ -102,8 +102,22 @@ def _group_and_filter_reactions(
         try:
             import emoji
 
-            emo = emoji.emojize(f":{react['name']}:", language="alias")
             emoji_name = react["name"]
+            emo = emoji.emojize(f":{emoji_name}:", language="alias")
+
+            # Custom Slack emoji have no Unicode equivalent — skip them here.
+            # They are already preserved as a text footnote on the message by
+            # _build_custom_reaction_footnote() in message_builder.py.
+            if emo == f":{emoji_name}:":
+                log_with_context(
+                    logging.DEBUG,
+                    f"Skipping reaction :{emoji_name}: (custom emoji, already in message footnote)",
+                    message_id=message_id,
+                    emoji=emoji_name,
+                    channel=state.context.current_channel,
+                )
+                continue
+
             emoji_users = react.get("users", [])
 
             log_with_context(

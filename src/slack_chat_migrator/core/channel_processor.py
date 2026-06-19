@@ -502,13 +502,108 @@ class ChannelProcessor:
                     channel=channel,
                 )
 
-                self.chat.complete_import(space)
+                complete_import_response = self.chat.complete_import(space)
 
                 log_with_context(
                     logging.INFO,
                     f"Successfully completed import mode for space: {space}",
                     channel=channel,
                 )
+                log_with_context(
+                    logging.DEBUG,
+                    f"completeImport response for {space}: {complete_import_response}",
+                    channel=channel,
+                )
+
+                # Mirror Slack's public/private setting: a public Slack channel
+                # (is_private=False) becomes DISCOVERABLE; a private channel stays
+                # PRIVATE (the Google Chat default).  The make_spaces_discoverable
+                # config flag overrides this, forcing all spaces to be discoverable.
+                channel_meta = self.ctx.channels_meta.get(channel, {})
+                raw_is_private = channel_meta.get("is_private", "__missing__")
+                channel_is_public = not channel_meta.get("is_private", True)
+
+                log_with_context(
+                    logging.DEBUG,
+                    f"Visibility decision for {channel}: "
+                    f"channels_meta has {len(channel_meta)} keys, "
+                    f"is_private={raw_is_private!r}, "
+                    f"channel_is_public={channel_is_public}, "
+                    f"make_spaces_discoverable={self.ctx.config.make_spaces_discoverable}",
+                    channel=channel,
+                )
+
+                if self.ctx.config.make_spaces_discoverable or channel_is_public:
+                    log_with_context(
+                        logging.DEBUG,
+                        f"Patching {space} to DISCOVERABLE "
+                        f"(reason: {'make_spaces_discoverable=true' if self.ctx.config.make_spaces_discoverable else 'public Slack channel'})",
+                        channel=channel,
+                    )
+                    try:
+                        patch_response = self.chat.patch_space(
+                            name=space,
+                            update_mask="accessSettings",
+                            body={"accessSettings": {"accessState": "DISCOVERABLE"}},
+                            use_admin_access=True,
+                        )
+                        actual_state = (
+                            patch_response.get("accessSettings", {}).get("accessState", "UNKNOWN")
+                        )
+                        log_with_context(
+                            logging.INFO,
+                            f"Set space {space} to DISCOVERABLE "
+                            f"(API confirmed accessState={actual_state!r})",
+                            channel=channel,
+                        )
+                        if actual_state != "DISCOVERABLE":
+                            log_with_context(
+                                logging.WARNING,
+                                f"patch_space succeeded but accessState is {actual_state!r} "
+                                f"instead of 'DISCOVERABLE'. "
+                                f"Space Discovery may not be enabled for this Google Workspace "
+                                f"organisation — requires Business Standard or above. "
+                                f"Manual workaround: open the space in Google Chat → "
+                                f"space name → Settings → Who can join → "
+                                f"'Anyone in <org>'.",
+                                channel=channel,
+                            )
+                        log_with_context(
+                            logging.DEBUG,
+                            f"patch_space full response for {space}: {patch_response}",
+                            channel=channel,
+                        )
+                    except HttpError as patch_e:
+                        if patch_e.resp.status == 400 and "Invalid update mask" in str(patch_e):
+                            log_with_context(
+                                logging.WARNING,
+                                f"Cannot set space {space} to DISCOVERABLE — the Google Chat API "
+                                f"rejected 'accessSettings' as an update mask field (HTTP 400). "
+                                f"This happens when Space Discovery is not enabled for your "
+                                f"Google Workspace organisation (requires Business Standard or above). "
+                                f"Manual workaround: open the space in Google Chat → "
+                                f"space name → Settings → Who can join → 'Anyone in <org>'.",
+                                channel=channel,
+                            )
+                        else:
+                            log_with_context(
+                                logging.WARNING,
+                                f"Failed to set space {space} discoverable: {patch_e}",
+                                channel=channel,
+                            )
+                    except (RefreshError, TransportError) as patch_e:
+                        log_with_context(
+                            logging.WARNING,
+                            f"Failed to set space {space} discoverable: {patch_e}",
+                            channel=channel,
+                        )
+                else:
+                    log_with_context(
+                        logging.DEBUG,
+                        f"Leaving {space} as PRIVATE "
+                        f"(channel is_private={raw_is_private!r}, make_spaces_discoverable=false)",
+                        channel=channel,
+                    )
 
             except (HttpError, RefreshError, TransportError) as e:
                 log_with_context(

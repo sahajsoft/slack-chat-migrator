@@ -79,6 +79,7 @@ class SlackChannel(TypedDict, total=False):
     name: str
     created: int
     is_general: bool
+    is_private: bool
     members: list[str]
     purpose: dict[str, str]
     topic: dict[str, str]
