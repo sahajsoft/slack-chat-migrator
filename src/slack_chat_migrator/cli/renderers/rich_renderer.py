@@ -63,9 +63,6 @@ class RichProgressRenderer:
 
         # Current state
         self._current_phase = "Initializing"
-        self._current_channel: str | None = None
-        self._channel_msg_done = 0
-        self._channel_msg_total = 0
 
         self._saved_console_level: int | None = None
 
@@ -82,10 +79,12 @@ class RichProgressRenderer:
         self._overall_progress = Progress(*_bar_columns, console=self._console)
         self._channel_progress = Progress(*_bar_columns, console=self._console)
         self._overall_task: TaskID | None = None
-        self._message_task: TaskID | None = None
-        self._member_task: TaskID | None = None
-        self._member_done: int = 0
-        self._member_total: int = 0
+
+        # Per-channel task tracking for parallel display
+        self._active_msg_tasks: dict[str, TaskID] = {}
+        self._active_member_tasks: dict[str, TaskID] = {}
+        self._channel_msg_counts: dict[str, int] = {}
+        self._channel_member_counts: dict[str, int] = {}
 
         tracker.subscribe(self.handle_event)
 
@@ -196,10 +195,8 @@ class RichProgressRenderer:
         from rich.rule import Rule
 
         parts: list[RenderableType] = [self._overall_progress]
-        # Channel sub-section: separator + name + channel-specific bars
-        if self._current_channel:
+        if self._active_msg_tasks or self._active_member_tasks:
             parts.append(Rule(style="dim"))
-            parts.append(Text(f"#{self._current_channel}", style="bold cyan"))
             parts.append(Padding(self._channel_progress, (0, 0, 0, 2)))
         return Panel(
             Group(*parts),
@@ -257,18 +254,11 @@ class RichProgressRenderer:
     # ------------------------------------------------------------------
 
     def _on_channel_start(self, event: ProgressEvent) -> None:
-        self._current_channel = event.channel
-        self._channel_msg_done = 0
-        self._channel_msg_total = 0
-
-        # Clear stale bars from previous channel
-        if self._member_task is not None:
-            self._channel_progress.remove_task(self._member_task)
-            self._member_task = None
-            self._member_done = 0
-        if self._message_task is not None:
-            self._channel_progress.remove_task(self._message_task)
-            self._message_task = None
+        ch = event.channel or ""
+        self._channel_msg_counts[ch] = 0
+        self._channel_member_counts[ch] = 0
+        # Placeholder bar — total updated when MESSAGE_PHASE_START fires
+        self._active_msg_tasks[ch] = self._channel_progress.add_task(f"#{ch}", total=1)
 
     def _on_channel_complete(self, event: ProgressEvent) -> None:
         self._channels_complete += 1
@@ -276,28 +266,29 @@ class RichProgressRenderer:
             self._overall_progress.update(
                 self._overall_task, completed=self._channels_complete
             )
-        # Remove message bar for completed channel
-        if self._message_task is not None:
-            self._channel_progress.remove_task(self._message_task)
-            self._message_task = None
-        # Remove member bar for completed channel
-        if self._member_task is not None:
-            self._channel_progress.remove_task(self._member_task)
-            self._member_task = None
-            self._member_done = 0
+        ch = event.channel or ""
+        for task_id in [
+            self._active_msg_tasks.pop(ch, None),
+            self._active_member_tasks.pop(ch, None),
+        ]:
+            if task_id is not None:
+                self._channel_progress.remove_task(task_id)
+        self._channel_msg_counts.pop(ch, None)
+        self._channel_member_counts.pop(ch, None)
 
     def _on_message_sent(self, event: ProgressEvent) -> None:
         self._messages_sent += 1
-        self._channel_msg_done += 1
+        ch = event.channel or ""
+        self._channel_msg_counts[ch] = self._channel_msg_counts.get(ch, 0) + 1
         now = time.time()
         self._recent_msg_times.append(now)
-        # Prune entries older than 10 seconds
         cutoff = now - 10.0
         while self._recent_msg_times and self._recent_msg_times[0] < cutoff:
             self._recent_msg_times.popleft()
-        if self._message_task is not None:
+        task_id = self._active_msg_tasks.get(ch)
+        if task_id is not None:
             self._channel_progress.update(
-                self._message_task, completed=self._channel_msg_done
+                task_id, completed=self._channel_msg_counts[ch]
             )
 
     def _on_message_failed(self, event: ProgressEvent) -> None:
@@ -314,47 +305,42 @@ class RichProgressRenderer:
 
     def _on_member_added(self, event: ProgressEvent) -> None:
         self._members_added += 1
-        if self._member_task is not None:
-            self._member_done += 1
-            self._channel_progress.update(
-                self._member_task, completed=self._member_done
-            )
-            # Auto-remove when complete so it doesn't linger during message phase
-            if self._member_total and self._member_done >= self._member_total:
-                self._channel_progress.remove_task(self._member_task)
-                self._member_task = None
+        ch = event.channel or ""
+        self._channel_member_counts[ch] = self._channel_member_counts.get(ch, 0) + 1
+        task_id = self._active_member_tasks.get(ch)
+        if task_id is not None:
+            count = self._channel_member_counts[ch]
+            self._channel_progress.update(task_id, completed=count)
 
     def _on_member_phase_start(self, event: ProgressEvent) -> None:
-        # Remove any existing member bar
-        if self._member_task is not None:
-            self._channel_progress.remove_task(self._member_task)
-        self._member_done = 0
-        self._member_total = event.total or 0
-        if self._member_total > 0:
-            self._member_task = self._channel_progress.add_task(
-                "Members", total=self._member_total
-            )
-        else:
-            self._member_task = None
-
-    def _on_message_phase_start(self, event: ProgressEvent) -> None:
-        # Clean up member bar — member phase is over once messages start
-        if self._member_task is not None:
-            self._channel_progress.remove_task(self._member_task)
-            self._member_task = None
-            self._member_done = 0
-        # Remove any existing message bar and create a fresh one
-        if self._message_task is not None:
-            self._channel_progress.remove_task(self._message_task)
-        self._channel_msg_done = 0
+        ch = event.channel or ""
+        existing = self._active_member_tasks.pop(ch, None)
+        if existing is not None:
+            self._channel_progress.remove_task(existing)
+        self._channel_member_counts[ch] = 0
         total = event.total or 0
         if total > 0:
-            self._channel_msg_total = total
-            self._message_task = self._channel_progress.add_task(
-                "Messages", total=total
+            self._active_member_tasks[ch] = self._channel_progress.add_task(
+                f"#{ch} Members", total=total
             )
-        else:
-            self._message_task = None
+
+    def _on_message_phase_start(self, event: ProgressEvent) -> None:
+        ch = event.channel or ""
+        # Remove member bar now that message phase begins
+        member_task = self._active_member_tasks.pop(ch, None)
+        if member_task is not None:
+            self._channel_progress.remove_task(member_task)
+            self._channel_member_counts.pop(ch, None)
+        # Update the placeholder task with the real total
+        total = event.total or 0
+        self._channel_msg_counts[ch] = 0
+        existing = self._active_msg_tasks.get(ch)
+        if existing is not None:
+            self._channel_progress.update(existing, total=max(total, 1), completed=0)
+        elif total > 0:
+            self._active_msg_tasks[ch] = self._channel_progress.add_task(
+                f"#{ch}", total=total
+            )
 
     def _on_phase_change(self, event: ProgressEvent) -> None:
         self._current_phase = event.detail or "Unknown"

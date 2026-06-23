@@ -228,7 +228,8 @@ def _handle_send_result(
     Updates ``messages_created`` counter, ``message_id_map``, ``thread_map``,
     ``sent_messages``, and triggers reaction processing when applicable.
     """
-    state.progress.migration_summary["messages_created"] += 1
+    with state._lock:
+        state.progress.migration_summary["messages_created"] += 1
 
     # Always store by plain ts so lookup by original timestamp works even for
     # edited messages (edited messages previously only stored composite key).
@@ -689,7 +690,8 @@ def track_message_stats(
             ts=ts,
         )
         state.progress.channel_stats[channel]["file_count"] += file_count
-        state.progress.migration_summary["files_created"] += file_count
+        with state._lock:
+            state.progress.migration_summary["files_created"] += file_count
 
 
 def send_intro(
@@ -764,8 +766,8 @@ def send_intro(
 
         # Send the message
         chat.create_message(parent=space, body=message_body)
-        # Increment the counter
-        state.progress.migration_summary["messages_created"] += 1
+        with state._lock:
+            state.progress.migration_summary["messages_created"] += 1
 
         log_with_context(
             logging.INFO, f"Sent intro message to space {space}", channel=channel

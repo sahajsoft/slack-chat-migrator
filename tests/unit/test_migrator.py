@@ -1539,7 +1539,9 @@ class TestMigrate:
         mock_cleanup,
         tmp_path,
     ):
-        m = _make_migrator_for_migrate(tmp_path)
+        m = _make_migrator_for_migrate(tmp_path, dry_run=False)
+        # Prevent _make_thread_chat from hitting real GCP credentials
+        m._make_thread_chat = MagicMock(return_value=m.chat)
         mock_cp = MagicMock()
         mock_cp.process_channel.return_value = MagicMock(
             should_abort=False, had_errors=False

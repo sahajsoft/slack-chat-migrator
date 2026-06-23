@@ -138,11 +138,11 @@ class TestRichProgressRenderer:
         renderer = RichProgressRenderer(tracker)
 
         tracker.channel_start("general")
-        assert renderer._current_channel == "general"
+        assert "general" in renderer._active_msg_tasks
 
         # Message bar is created by MESSAGE_PHASE_START, not channel_start
         tracker.message_phase_start("general", total=10)
-        assert renderer._channel_msg_total == 10
+        assert renderer._active_msg_tasks.get("general") is not None
 
         tracker.channel_complete("general")
         assert renderer._channels_complete == 1
@@ -208,8 +208,8 @@ class TestRichMemberBar:
 
         tracker.member_phase_start("general", total=10)
 
-        assert renderer._member_task is not None
-        assert renderer._member_done == 0
+        assert renderer._active_member_tasks.get("general") is not None
+        assert renderer._channel_member_counts.get("general") == 0
 
     def test_member_bar_advances_on_member_added(self):
         tracker = ProgressTracker()
@@ -219,7 +219,7 @@ class TestRichMemberBar:
         tracker.member_added("general")
         tracker.member_added("general")
 
-        assert renderer._member_done == 2
+        assert renderer._channel_member_counts.get("general") == 2
         assert renderer._members_added == 2
 
     def test_member_bar_removed_on_channel_complete(self):
@@ -230,20 +230,21 @@ class TestRichMemberBar:
         tracker.member_phase_start("general", total=10)
         tracker.channel_complete("general")
 
-        assert renderer._member_task is None
-        assert renderer._member_done == 0
+        assert renderer._active_member_tasks.get("general") is None
+        assert renderer._channel_member_counts.get("general") is None
 
     def test_member_bar_replaced_on_new_phase_start(self):
         tracker = ProgressTracker()
         renderer = RichProgressRenderer(tracker)
 
         tracker.member_phase_start("general", total=10)
-        first_task = renderer._member_task
+        first_task = renderer._active_member_tasks.get("general")
 
-        tracker.member_phase_start("random", total=5)
-        assert renderer._member_task is not None
-        assert renderer._member_task != first_task
-        assert renderer._member_done == 0
+        # Starting a new phase for the same channel replaces the task
+        tracker.member_phase_start("general", total=5)
+        assert renderer._active_member_tasks.get("general") is not None
+        assert renderer._active_member_tasks.get("general") != first_task
+        assert renderer._channel_member_counts.get("general") == 0
 
 
 class TestRichMessageBar:
@@ -255,9 +256,8 @@ class TestRichMessageBar:
 
         tracker.message_phase_start("general", total=50)
 
-        assert renderer._message_task is not None
-        assert renderer._channel_msg_done == 0
-        assert renderer._channel_msg_total == 50
+        assert renderer._active_msg_tasks.get("general") is not None
+        assert renderer._channel_msg_counts.get("general") == 0
 
     def test_message_bar_advances_on_message_sent(self):
         tracker = ProgressTracker()
@@ -267,7 +267,7 @@ class TestRichMessageBar:
         tracker.message_sent("general")
         tracker.message_sent("general")
 
-        assert renderer._channel_msg_done == 2
+        assert renderer._channel_msg_counts.get("general") == 2
         assert renderer._messages_sent == 2
 
     def test_message_bar_removed_on_channel_complete(self):
@@ -278,24 +278,25 @@ class TestRichMessageBar:
         tracker.message_phase_start("general", total=5)
         tracker.channel_complete("general")
 
-        assert renderer._message_task is None
+        assert renderer._active_msg_tasks.get("general") is None
 
-    def test_message_bar_replaced_on_new_channel(self):
+    def test_message_bar_created_for_parallel_channels(self):
         tracker = ProgressTracker()
         renderer = RichProgressRenderer(tracker)
 
+        tracker.channel_start("general")
         tracker.message_phase_start("general", total=10)
-        first_task = renderer._message_task
+        general_task = renderer._active_msg_tasks.get("general")
 
-        # Starting a new channel clears the old bar
+        # A second channel running in parallel gets its own independent bar
         tracker.channel_start("random")
-        assert renderer._message_task is None
-
-        # New phase start creates a fresh bar
         tracker.message_phase_start("random", total=20)
-        assert renderer._message_task is not None
-        assert renderer._message_task != first_task
-        assert renderer._channel_msg_total == 20
+        random_task = renderer._active_msg_tasks.get("random")
+
+        assert general_task is not None
+        assert random_task is not None
+        assert general_task != random_task
+        assert renderer._channel_msg_counts.get("random") == 0
 
 
 class TestRichThroughputAndErrors:

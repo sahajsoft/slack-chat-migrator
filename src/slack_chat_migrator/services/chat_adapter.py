@@ -92,9 +92,7 @@ class ChatAdapter:
         }
         if use_admin_access:
             kwargs["useAdminAccess"] = True
-        result: dict[str, Any] = (
-            self._svc.spaces().patch(**kwargs).execute()
-        )
+        result: dict[str, Any] = self._svc.spaces().patch(**kwargs).execute()
         return result
 
     def complete_import(self, name: str) -> dict[str, Any]:

@@ -48,7 +48,8 @@ def process_reactions_batch(
         ctx, state, user_resolver, reactions, message_id
     )
 
-    state.progress.migration_summary["reactions_created"] += reaction_count
+    with state._lock:
+        state.progress.migration_summary["reactions_created"] += reaction_count
 
     # Impersonation in _build_user_batches() requires real credentials
     # outside the DI boundary, so skip API execution in dry-run mode.

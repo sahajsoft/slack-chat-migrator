@@ -9,11 +9,13 @@ import json
 import logging
 import os
 import signal
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from slack_chat_migrator.core.channel_processor import ChannelProcessor
+from slack_chat_migrator.core.channel_processor import ChannelProcessor, ChannelResult
 from slack_chat_migrator.core.checkpoint import (
     CheckpointData,
     clear_checkpoint,
@@ -367,6 +369,44 @@ class SlackToChatMigrator:
         if self._progress_tracker:
             self._progress_tracker.phase_change(phase)
 
+    def _make_thread_chat(self) -> ChatAdapter:
+        """Create a fresh admin ChatAdapter for use in a single thread.
+
+        httplib2 is not thread-safe, so each parallel worker needs its own
+        HTTP connection rather than sharing self.chat.
+        """
+        if self.dry_run:
+            return ChatAdapter(DryRunChatService(self.state))
+        assert self.creds_path is not None and self.workspace_admin is not None
+        return ChatAdapter(
+            get_gcp_service(
+                str(self.creds_path),
+                self.workspace_admin,
+                "chat",
+                "v1",
+                max_retries=self.config.max_retries,
+                retry_delay=self.config.retry_delay,
+            )
+        )
+
+    def _make_thread_user_resolver(self, thread_chat: ChatAdapter) -> UserResolver:
+        """Create a UserResolver with a thread-local admin service.
+
+        Shares state.users.chat_delegates cache (per-user services) across
+        threads but uses a dedicated admin service for fallback calls.
+        """
+        return UserResolver(
+            config=self.config,
+            state=self.state,
+            chat=thread_chat,
+            creds_path=self.creds_path,
+            user_map=self.user_map,
+            unmapped_user_tracker=self.unmapped_user_tracker,
+            export_root=self.export_root,
+            workspace_admin=self.workspace_admin,
+            workspace_domain=self.workspace_domain,
+        )
+
     def migrate(self, progress_tracker: ProgressTracker | None = None) -> bool:  # noqa: C901
         """Main migration function that orchestrates the entire process.
 
@@ -477,40 +517,81 @@ class SlackToChatMigrator:
             # Process each channel
             self._emit_phase("Migrating channels")
 
+            checkpoint_lock = threading.Lock()
+
             def _save_partial_progress(channel: str, last_ts: float) -> None:
-                checkpoint.partial_channels[channel] = last_ts
-                save_checkpoint(checkpoint_path, checkpoint)
-
-            self.channel_processor = ChannelProcessor(
-                ctx=self.ctx,
-                state=self.state,
-                chat=self.chat,
-                user_resolver=self.user_resolver,
-                file_handler=getattr(self, "file_handler", None),
-                attachment_processor=self.attachment_processor,
-                progress_tracker=self._progress_tracker,
-                on_partial_progress=None if self.dry_run else _save_partial_progress,
-            )
-            for ch in all_channel_dirs:
-                channel_name = ch.name
-                if channel_name in checkpoint.completed_channels:
-                    log_with_context(
-                        logging.INFO,
-                        f"Skipping channel {channel_name} (already completed in previous run)",
-                    )
-                    continue
-
-                result = self.channel_processor.process_channel(ch)
-                if result.should_abort:
-                    break
-
-                # Only checkpoint channels that completed without errors.
-                # Skip in dry-run: the validation pass must not write to the
-                # checkpoint that the real migration run reads.
-                if not result.had_errors and not self.dry_run:
-                    checkpoint.partial_channels.pop(channel_name, None)
-                    checkpoint.completed_channels[channel_name] = now_iso()
+                with checkpoint_lock:
+                    checkpoint.partial_channels[channel] = last_ts
                     save_checkpoint(checkpoint_path, checkpoint)
+
+            pending_channels = [
+                ch
+                for ch in all_channel_dirs
+                if ch.name not in checkpoint.completed_channels
+            ]
+
+            def _process_one(ch: Path) -> ChannelResult:
+                thread_chat = self._make_thread_chat()
+                thread_resolver = self._make_thread_user_resolver(thread_chat)
+                processor = ChannelProcessor(
+                    ctx=self.ctx,
+                    state=self.state,
+                    chat=thread_chat,
+                    user_resolver=thread_resolver,
+                    file_handler=getattr(self, "file_handler", None),
+                    attachment_processor=self.attachment_processor,
+                    progress_tracker=self._progress_tracker,
+                    on_partial_progress=None
+                    if self.dry_run
+                    else _save_partial_progress,
+                )
+                return processor.process_channel(ch)
+
+            # Run channels in parallel when include_channels is specified,
+            # sequential otherwise (all-channel migrations stay predictable).
+            workers = (
+                len(self.config.include_channels) if self.config.include_channels else 1
+            )
+
+            if workers <= 1:
+                for ch in pending_channels:
+                    result = _process_one(ch)
+                    if result.should_abort:
+                        break
+                    if not result.had_errors and not self.dry_run:
+                        with checkpoint_lock:
+                            checkpoint.partial_channels.pop(ch.name, None)
+                            checkpoint.completed_channels[ch.name] = now_iso()
+                            save_checkpoint(checkpoint_path, checkpoint)
+            else:
+                log_with_context(
+                    logging.INFO,
+                    f"Running {len(pending_channels)} channels with {workers} parallel workers",
+                )
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_to_ch = {
+                        executor.submit(_process_one, ch): ch for ch in pending_channels
+                    }
+                    for future in as_completed(future_to_ch):
+                        ch = future_to_ch[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            log_with_context(
+                                logging.ERROR,
+                                f"Channel {ch.name} raised an unexpected error: {exc}",
+                                channel=ch.name,
+                            )
+                            continue
+                        if result.should_abort:
+                            for f in future_to_ch:
+                                f.cancel()
+                            break
+                        if not result.had_errors and not self.dry_run:
+                            with checkpoint_lock:
+                                checkpoint.partial_channels.pop(ch.name, None)
+                                checkpoint.completed_channels[ch.name] = now_iso()
+                                save_checkpoint(checkpoint_path, checkpoint)
 
             self._emit_phase("Finalizing")
 

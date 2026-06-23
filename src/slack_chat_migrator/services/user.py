@@ -223,4 +223,9 @@ def generate_user_map(
             f"Tracked {len(deleted_user_display_names)} deactivated users — their mentions will render as plain text",
         )
 
-    return user_map, users_without_email, frozenset(bot_user_ids), deleted_user_display_names
+    return (
+        user_map,
+        users_without_email,
+        frozenset(bot_user_ids),
+        deleted_user_display_names,
+    )

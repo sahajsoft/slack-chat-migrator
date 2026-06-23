@@ -139,6 +139,9 @@ class MigrationState:
             raise ValueError(
                 f"channel_error_count must be non-negative, got {self.errors.channel_error_count}"
             )
+        import threading
+
+        self._lock: threading.Lock = threading.Lock()
 
     def reset_for_run(self) -> None:
         """Reset per-run state at the start of a new migration run.

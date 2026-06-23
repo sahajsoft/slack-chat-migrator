@@ -67,7 +67,7 @@ def _build_custom_reaction_footnote(message: dict[str, Any]) -> str:
         resolved = _emoji.emojize(f":{name}:", language="alias")
         if resolved == f":{name}:":
             count = len(react.get("users", []))
-            parts.append(f":{name}: ×{count}")
+            parts.append(f":{name}: ×{count}")  # noqa: RUF001
 
     return "  ".join(parts)
 
