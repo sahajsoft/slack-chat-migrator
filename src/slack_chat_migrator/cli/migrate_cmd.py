@@ -120,7 +120,7 @@ def migrate(
     )
 
     # Create output directory early so all operations are logged to file
-    output_dir = create_migration_output_directory()
+    output_dir = create_migration_output_directory(resume=resume)
 
     # Set up logger with output directory for file logging
     # Suppress "Main log file created" from console on TTY (still goes to file)
@@ -890,12 +890,42 @@ def _print_preflight_status(label: str, status: str = "ok", detail: str = "") ->
     console.print(msg)
 
 
-def create_migration_output_directory() -> str:
-    """Create output directory for migration with timestamp.
+def find_latest_migration_run_directory() -> str | None:
+    """Return the most recent migration_logs/run_* directory that has a checkpoint.
+
+    Skips directories with no checkpoint (e.g. empty runs created by a previous
+    broken resume) and non-directory entries like .zip files.
+    """
+    logs_dir = Path("migration_logs")
+    if not logs_dir.is_dir():
+        return None
+    run_dirs = sorted(
+        (p for p in logs_dir.glob("run_*") if p.is_dir()),
+        reverse=True,
+    )
+    for d in run_dirs:
+        if (d / ".migration_checkpoint.json").exists():
+            return str(d)
+    return None
+
+
+def create_migration_output_directory(resume: bool = False) -> str:
+    """Return the output directory for this migration run.
+
+    When *resume* is True and a previous run directory exists, reuse it so
+    that its checkpoint file is found and progress is preserved.  Otherwise
+    (or when no previous run exists) a fresh timestamped directory is created.
 
     Returns:
-        The path to the newly created output directory.
+        The path to the output directory.
     """
+    if resume:
+        existing = find_latest_migration_run_directory()
+        if existing:
+            # Ensure channel_logs sub-dir exists (may be missing in old runs)
+            os.makedirs(os.path.join(existing, "channel_logs"), exist_ok=True)
+            return existing
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"migration_logs/run_{timestamp}"
 
