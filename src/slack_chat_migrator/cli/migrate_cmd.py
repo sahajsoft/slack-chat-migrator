@@ -64,6 +64,12 @@ logger = logging.getLogger("slack_chat_migrator")
     default=False,
     help="Resume a previous migration - reuse existing spaces instead of creating new ones",
 )
+@click.option(
+    "--run_dir",
+    default=None,
+    help="Explicit run directory to resume from (e.g. migration_logs/run_20260623_235602). "
+    "Overrides the automatic 'latest checkpoint' lookup when used with --resume.",
+)
 @deprecated_option("--update_mode", "--resume", is_flag=True, default=False)
 @click.option(
     "--complete",
@@ -86,6 +92,7 @@ def migrate(
     debug_api: bool,
     dry_run: bool,
     resume: bool,
+    run_dir: str | None,
     complete: bool,
     skip_permission_check: bool,
 ) -> None:
@@ -100,6 +107,7 @@ def migrate(
         debug_api: Enable detailed API request/response logging.
         dry_run: Validation-only mode.
         resume: Resume a previous migration (reuse existing spaces).
+        run_dir: Explicit run directory to resume from (overrides auto-lookup).
         complete: Complete import mode on all spaces without migrating.
         skip_permission_check: Skip permission checks before migration.
     """
@@ -120,7 +128,7 @@ def migrate(
     )
 
     # Create output directory early so all operations are logged to file
-    output_dir = create_migration_output_directory(resume=resume)
+    output_dir = create_migration_output_directory(resume=resume, run_dir=run_dir)
 
     # Set up logger with output directory for file logging
     # Suppress "Main log file created" from console on TTY (still goes to file)
@@ -909,18 +917,21 @@ def find_latest_migration_run_directory() -> str | None:
     return None
 
 
-def create_migration_output_directory(resume: bool = False) -> str:
+def create_migration_output_directory(
+    resume: bool = False, run_dir: str | None = None
+) -> str:
     """Return the output directory for this migration run.
 
     When *resume* is True and a previous run directory exists, reuse it so
-    that its checkpoint file is found and progress is preserved.  Otherwise
-    (or when no previous run exists) a fresh timestamped directory is created.
+    that its checkpoint file is found and progress is preserved.  If *run_dir*
+    is provided it is used directly (must already exist).  Otherwise the most
+    recent run directory with a checkpoint is discovered automatically.
 
     Returns:
         The path to the output directory.
     """
     if resume:
-        existing = find_latest_migration_run_directory()
+        existing: str | None = run_dir or find_latest_migration_run_directory()
         if existing:
             # Ensure channel_logs sub-dir exists (may be missing in old runs)
             os.makedirs(os.path.join(existing, "channel_logs"), exist_ok=True)
