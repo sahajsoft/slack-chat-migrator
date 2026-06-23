@@ -61,3 +61,9 @@ PERMISSION_DENIED_ERROR = "PERMISSION_DENIED"
 API_THROTTLE_MESSAGE_SECONDS = 0.05
 API_THROTTLE_MEMBER_SECONDS = 0.1
 API_THROTTLE_DISCOVERY_SECONDS = 0.2
+
+# --- Checkpoint ---
+# Save per-channel message progress to disk every N successfully sent messages.
+# Lower = more frequent saves (safer on crash, more disk I/O).
+# Higher = fewer saves (less overhead, more re-work on resume).
+CHECKPOINT_INTERVAL_MESSAGES = 50

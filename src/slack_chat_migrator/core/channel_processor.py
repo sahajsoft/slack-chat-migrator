@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -23,7 +24,10 @@ if TYPE_CHECKING:
 from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 
-from slack_chat_migrator.constants import API_THROTTLE_MESSAGE_SECONDS
+from slack_chat_migrator.constants import (
+    API_THROTTLE_MESSAGE_SECONDS,
+    CHECKPOINT_INTERVAL_MESSAGES,
+)
 from slack_chat_migrator.core.config import (
     ImportCompletionStrategy,
     should_process_channel,
@@ -58,6 +62,8 @@ class ChannelResult(NamedTuple):
 class ChannelProcessor:
     """Handles per-channel processing during migration."""
 
+    _CHECKPOINT_INTERVAL = CHECKPOINT_INTERVAL_MESSAGES
+
     def __init__(
         self,
         ctx: MigrationContext,
@@ -67,6 +73,7 @@ class ChannelProcessor:
         file_handler: FileHandler | None,
         attachment_processor: MessageAttachmentProcessor,
         progress_tracker: ProgressTracker | None = None,
+        on_partial_progress: Callable[[str, float], None] | None = None,
     ) -> None:
         self.ctx = ctx
         self.state = state
@@ -75,6 +82,7 @@ class ChannelProcessor:
         self.file_handler = file_handler
         self.attachment_processor = attachment_processor
         self.progress_tracker = progress_tracker
+        self.on_partial_progress = on_partial_progress
 
     def process_channel(self, ch_dir: Path) -> ChannelResult:
         """Process a single channel directory.
@@ -463,6 +471,11 @@ class ChannelProcessor:
                     self.progress_tracker.message_sent(
                         channel, count=processed_count, total=total_sendable
                     )
+                if (
+                    self.on_partial_progress
+                    and processed_count % self._CHECKPOINT_INTERVAL == 0
+                ):
+                    self.on_partial_progress(channel, float(ts))
 
             time.sleep(
                 API_THROTTLE_MESSAGE_SECONDS
@@ -547,8 +560,8 @@ class ChannelProcessor:
                             body={"accessSettings": {"accessState": "DISCOVERABLE"}},
                             use_admin_access=True,
                         )
-                        actual_state = (
-                            patch_response.get("accessSettings", {}).get("accessState", "UNKNOWN")
+                        actual_state = patch_response.get("accessSettings", {}).get(
+                            "accessState", "UNKNOWN"
                         )
                         log_with_context(
                             logging.INFO,
@@ -574,7 +587,9 @@ class ChannelProcessor:
                             channel=channel,
                         )
                     except HttpError as patch_e:
-                        if patch_e.resp.status == 400 and "Invalid update mask" in str(patch_e):
+                        if patch_e.resp.status == 400 and "Invalid update mask" in str(
+                            patch_e
+                        ):
                             log_with_context(
                                 logging.WARNING,
                                 f"Cannot set space {space} to DISCOVERABLE — the Google Chat API "

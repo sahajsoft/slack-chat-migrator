@@ -21,6 +21,9 @@ class CheckpointData:
     completed_channels: dict[str, str] = field(
         default_factory=dict
     )  # channel_name -> ISO 8601 completion timestamp
+    partial_channels: dict[str, float] = field(
+        default_factory=dict
+    )  # channel_name -> last successfully sent message Unix timestamp
     started_at: str | None = None
     last_updated: str | None = None
 
@@ -51,6 +54,7 @@ def load_checkpoint(path: Path) -> CheckpointData | None:
         return CheckpointData(
             schema_version=raw.get("schema_version", CHECKPOINT_SCHEMA_VERSION),
             completed_channels=raw.get("completed_channels", {}),
+            partial_channels=raw.get("partial_channels", {}),
             started_at=raw.get("started_at"),
             last_updated=raw.get("last_updated"),
         )
