@@ -1,4 +1,22 @@
-.PHONY: install lint format format-check typecheck test test-cov check fix clean
+define PENDING_COMPLETE_PY
+import yaml, glob, os
+print("Channels with pending import-mode completion:")
+seen = set(); rows = []
+for r in sorted(glob.glob("migration_logs/run_*/migration_report.yaml")):
+    log = os.path.join(os.path.dirname(r), "migration.log")
+    if not os.path.exists(log): continue
+    content = open(log).read()
+    real = content.split("DRY RUN VALIDATION COMPLETED")[-1]
+    if "Incomplete imports" not in real: continue
+    report = yaml.safe_load(open(r))
+    run = os.path.basename(os.path.dirname(r))
+    for ch in report.get("spaces", {}):
+        if ch not in seen: rows.append("  " + run + " -> " + ch); seen.add(ch)
+print("\n".join(rows) if rows else "  (none -- all spaces already completed)")
+endef
+export PENDING_COMPLETE_PY
+
+.PHONY: install lint format format-check typecheck test test-cov check fix clean incomplete-imports pending-complete
 
 install:
 	pip install -e ".[dev]"
@@ -37,6 +55,9 @@ incomplete-imports:
 			echo "$$(basename $$dir) → $$channels"; \
 		fi \
 	done
+
+pending-complete:
+	@printf '%s\n' "$$PENDING_COMPLETE_PY" | .venv/bin/python3
 
 clean:
 	rm -rf build/ dist/ *.egg-info .mypy_cache .pytest_cache .coverage coverage.xml htmlcov/
