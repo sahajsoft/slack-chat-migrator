@@ -283,7 +283,9 @@ class SlackToChatMigrator:
 
         # Initialize message attachment processor
         self.attachment_processor = MessageAttachmentProcessor(
-            self.file_handler, dry_run=self.dry_run
+            self.file_handler,
+            dry_run=self.dry_run,
+            skip_file_uploads=self.config.skip_file_uploads,
         )
 
         # Reset mutable state for this run
@@ -365,7 +367,7 @@ class SlackToChatMigrator:
         if self._progress_tracker:
             self._progress_tracker.phase_change(phase)
 
-    def migrate(self, progress_tracker: ProgressTracker | None = None) -> bool:
+    def migrate(self, progress_tracker: ProgressTracker | None = None) -> bool:  # noqa: C901
         """Main migration function that orchestrates the entire process.
 
         Args:
@@ -423,10 +425,16 @@ class SlackToChatMigrator:
             )
             checkpoint = load_checkpoint(checkpoint_path)
             if checkpoint:
+                completed = len(checkpoint.completed_channels)
+                partial = len(checkpoint.partial_channels)
                 log_with_context(
                     logging.INFO,
-                    f"Resuming migration from checkpoint: {len(checkpoint.completed_channels)} channels already completed",
+                    f"Resuming migration from checkpoint: {completed} channels completed, "
+                    f"{partial} channels with partial progress",
                 )
+                # Restore per-channel message progress so already-sent messages are skipped
+                for ch_name, last_ts in checkpoint.partial_channels.items():
+                    self.state.progress.last_processed_timestamps[ch_name] = last_ts
             else:
                 checkpoint = CheckpointData(started_at=now_iso())
 
@@ -469,6 +477,10 @@ class SlackToChatMigrator:
             # Process each channel
             self._emit_phase("Migrating channels")
 
+            def _save_partial_progress(channel: str, last_ts: float) -> None:
+                checkpoint.partial_channels[channel] = last_ts
+                save_checkpoint(checkpoint_path, checkpoint)
+
             self.channel_processor = ChannelProcessor(
                 ctx=self.ctx,
                 state=self.state,
@@ -477,6 +489,7 @@ class SlackToChatMigrator:
                 file_handler=getattr(self, "file_handler", None),
                 attachment_processor=self.attachment_processor,
                 progress_tracker=self._progress_tracker,
+                on_partial_progress=None if self.dry_run else _save_partial_progress,
             )
             for ch in all_channel_dirs:
                 channel_name = ch.name
@@ -491,8 +504,11 @@ class SlackToChatMigrator:
                 if result.should_abort:
                     break
 
-                # Only checkpoint channels that completed without errors
-                if not result.had_errors:
+                # Only checkpoint channels that completed without errors.
+                # Skip in dry-run: the validation pass must not write to the
+                # checkpoint that the real migration run reads.
+                if not result.had_errors and not self.dry_run:
+                    checkpoint.partial_channels.pop(channel_name, None)
                     checkpoint.completed_channels[channel_name] = now_iso()
                     save_checkpoint(checkpoint_path, checkpoint)
 
@@ -537,8 +553,11 @@ class SlackToChatMigrator:
                 getattr(self, "unmapped_user_tracker", None),
             )
 
-            # Migration succeeded — remove checkpoint so the next run starts fresh
-            clear_checkpoint(checkpoint_path)
+            # Migration succeeded — remove checkpoint so the next run starts fresh.
+            # Skip this in dry-run mode: the validation pass runs before the real
+            # migration and must not destroy the checkpoint that the real run needs.
+            if not self.dry_run:
+                clear_checkpoint(checkpoint_path)
 
             # Clean up channel handlers in success case (finally block will also run)
             cleanup_channel_handlers(self.state)
