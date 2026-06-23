@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from slack_chat_migrator.core.state import MigrationState
     from slack_chat_migrator.utils.user_validation import UnmappedUserTracker
 
-from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.utils.api import get_gcp_service
@@ -101,7 +100,7 @@ class UserResolver:
                 raw_service.spaces().list(pageSize=1).execute()
                 self.state.users.valid_users[email] = True
                 self.state.users.chat_delegates[email] = ChatAdapter(raw_service)
-            except (HttpError, RefreshError, TransportError) as e:
+            except Exception as e:
                 error_code = e.resp.status if isinstance(e, HttpError) else "N/A"
                 log_with_context(
                     logging.WARNING,
