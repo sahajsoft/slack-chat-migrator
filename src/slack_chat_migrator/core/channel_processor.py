@@ -333,6 +333,20 @@ class ChannelProcessor:
         if not self.ctx.dry_run or self.ctx.update_mode:
             self._discover_channel_resources(channel)
 
+        # Fast-forward past already-processed messages using the checkpoint
+        # timestamp so resume doesn't iterate through thousands of skips.
+        last_ts = self.state.progress.last_processed_timestamps.get(channel, 0)
+        if last_ts > 0:
+            before = len(msgs)
+            msgs = [m for m in msgs if float(m.get("ts", 0)) > last_ts]
+            skipped = before - len(msgs)
+            if skipped:
+                log_with_context(
+                    logging.INFO,
+                    f"[RESUME] Fast-forwarded past {skipped} already-processed messages for {channel}",
+                    channel=channel,
+                )
+
         # Build user map with overrides once per channel.
         cached_user_map = build_user_map_with_overrides(self.ctx, self.user_resolver)
 
