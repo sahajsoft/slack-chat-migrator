@@ -10,7 +10,7 @@ from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.utils.api import (
     RetryWrapper,
-    _service_cache,
+    _get_thread_cache,
     escape_drive_query_value,
     get_gcp_service,
     slack_ts_to_rfc3339,
@@ -835,9 +835,9 @@ class TestGetGcpService:
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
         """Ensure the service cache is empty before and after each test."""
-        _service_cache.clear()
+        _get_thread_cache().clear()
         yield
-        _service_cache.clear()
+        _get_thread_cache().clear()
 
     @patch("slack_chat_migrator.utils.api.build")
     @patch(
@@ -1060,9 +1060,9 @@ class TestServiceCacheTTL:
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
         """Ensure the service cache is empty before and after each test."""
-        _service_cache.clear()
+        _get_thread_cache().clear()
         yield
-        _service_cache.clear()
+        _get_thread_cache().clear()
 
     @patch("slack_chat_migrator.utils.api.build")
     @patch(
@@ -1080,8 +1080,8 @@ class TestServiceCacheTTL:
 
         # Artificially age the cache entry past TTL
         cache_key = "/path/creds.json:user@example.com:chat:v1"
-        old_service, _ = _service_cache[cache_key]
-        _service_cache[cache_key] = (old_service, 0.0)  # epoch = very old
+        old_service, _ = _get_thread_cache()[cache_key]
+        _get_thread_cache()[cache_key] = (old_service, 0.0)  # epoch = very old
 
         svc2 = get_gcp_service("/path/creds.json", "user@example.com", "chat", "v1")
         # build should have been called a second time due to TTL eviction
@@ -1111,16 +1111,16 @@ class TestServiceCache401Eviction:
 
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
-        _service_cache.clear()
+        _get_thread_cache().clear()
         yield
-        _service_cache.clear()
+        _get_thread_cache().clear()
 
     @patch("slack_chat_migrator.utils.api.time.sleep")
     def test_401_clears_service_cache(self, _sleep):
         """A 401 HttpError in _wrap_execute should clear the service cache."""
         # Pre-populate the cache with a fake entry
-        _service_cache["fake:key"] = (MagicMock(), 999999999.0)
-        assert len(_service_cache) == 1
+        _get_thread_cache()["fake:key"] = (MagicMock(), 999999999.0)
+        assert len(_get_thread_cache()) == 1
 
         inner = MagicMock()
         inner.execute.side_effect = _make_http_error(401, "Unauthorized")
@@ -1130,13 +1130,13 @@ class TestServiceCache401Eviction:
             wrapper.execute()
 
         # Cache should have been cleared by the 401 handler
-        assert len(_service_cache) == 0
+        assert len(_get_thread_cache()) == 0
 
     @patch("slack_chat_migrator.utils.api.time.sleep")
     def test_403_does_not_clear_service_cache(self, _sleep):
         """A 403 HttpError should NOT clear the service cache."""
-        _service_cache["fake:key"] = (MagicMock(), 999999999.0)
-        assert len(_service_cache) == 1
+        _get_thread_cache()["fake:key"] = (MagicMock(), 999999999.0)
+        assert len(_get_thread_cache()) == 1
 
         inner = MagicMock()
         inner.execute.side_effect = _make_http_error(403, "Forbidden")
@@ -1146,4 +1146,4 @@ class TestServiceCache401Eviction:
             wrapper.execute()
 
         # Cache should NOT have been cleared
-        assert len(_service_cache) == 1
+        assert len(_get_thread_cache()) == 1
