@@ -110,9 +110,11 @@ def build_message_payload(
 
     # Append custom Slack emoji reactions as a text footnote.
     # These have no Unicode equivalent and cannot be added via the Reactions API.
-    custom_reaction_text = _build_custom_reaction_footnote(message)
-    if custom_reaction_text:
-        formatted_text = f"{formatted_text}\n\n_{custom_reaction_text}_"
+    # Skipped entirely when skip_reactions is enabled.
+    if not ctx.config.skip_reactions:
+        custom_reaction_text = _build_custom_reaction_footnote(message)
+        if custom_reaction_text:
+            formatted_text = f"{formatted_text}\n\n_{custom_reaction_text}_"
 
     # For edited messages, add an edit indicator
     if is_edited:
@@ -314,6 +316,7 @@ def process_attachments(
     # TODO(#47): Replace this workaround with proper driveDataRef attachments
     # For now, Drive file links are appended as text because the attachment method is unreliable
     drive_links = []
+    slack_url_links: list[str] = []
     non_drive_attachments = []
 
     if attachments:
@@ -332,25 +335,35 @@ def process_attachments(
                         ts=ts,
                         drive_file_id=drive_file_id,
                     )
+            elif "slackUrl" in attachment:
+                # skip_file_uploads mode: original Slack file URL kept as text
+                slack_info = attachment["slackUrl"]
+                url = slack_info.get("url", "")
+                name = slack_info.get("name", "file")
+                if url:
+                    slack_url_links.append(f"{name}: {url}")
             else:
                 # Keep non-Drive attachments as they are
                 non_drive_attachments.append(attachment)
 
+        # Collect all text links (Drive + Slack URLs)
+        all_text_links = [f"\U0001f4ce {link}" for link in drive_links] + [
+            f"\U0001f4ce {link}" for link in slack_url_links
+        ]
+
         # If we have Drive links, append them to the message text
-        if drive_links:
+        if all_text_links:
             # Only add newlines if the message text is not empty
             if payload["text"].strip():
-                links_text = "\n\n" + "\n".join(
-                    [f"\U0001f4ce {link}" for link in drive_links]
-                )
+                links_text = "\n\n" + "\n".join(all_text_links)
             else:
                 # If message is empty, don't add extra newlines
-                links_text = "\n".join([f"\U0001f4ce {link}" for link in drive_links])
+                links_text = "\n".join(all_text_links)
 
             payload["text"] = payload["text"] + links_text
             log_with_context(
                 logging.DEBUG,
-                f"Appended {len(drive_links)} Drive links to message text for {ts}",
+                f"Appended {len(all_text_links)} link(s) to message text for {ts}",
                 channel=channel,
                 ts=ts,
             )

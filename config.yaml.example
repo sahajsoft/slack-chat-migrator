@@ -55,3 +55,18 @@ space_name_prefix: ""
 # Make migrated spaces publicly discoverable (DISCOVERABLE) after completing import.
 # Set to false to leave spaces PRIVATE (invite-only).
 make_spaces_discoverable: true
+
+# Speed-up options — skip expensive phases to migrate faster.
+#
+# skip_file_uploads: when true, files are NOT downloaded from Slack or uploaded
+#   to Google Drive. Instead, the original Slack file URL is appended as a text
+#   link (📎) in the message. Files remain on Slack. Dramatically faster for
+#   channels with many attachments.
+#
+# skip_reactions: when true, all emoji reaction processing is skipped — no
+#   Reactions API calls are made and no custom-emoji footnotes are added to
+#   messages. Fastest option for reaction-heavy channels.
+#
+# Set both to false (or remove) to restore full migration behaviour.
+skip_file_uploads: false
+skip_reactions: false

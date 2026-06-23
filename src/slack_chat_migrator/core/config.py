@@ -86,6 +86,10 @@ class MigrationConfig:
     space_name_prefix: str = ""
     make_spaces_discoverable: bool = False
 
+    # Speed-up flags (skip expensive operations)
+    skip_file_uploads: bool = False  # append Slack URLs as text; no Drive upload
+    skip_reactions: bool = False  # skip all emoji reaction processing
+
     def __post_init__(self) -> None:
         """Validate configuration values after initialization."""
         if self.max_retries < 0:
@@ -126,6 +130,8 @@ class MigrationConfig:
             shared_drive=shared_drive,
             space_name_prefix=data.get("space_name_prefix", ""),
             make_spaces_discoverable=data.get("make_spaces_discoverable", False),
+            skip_file_uploads=data.get("skip_file_uploads", False),
+            skip_reactions=data.get("skip_reactions", False),
         )
 
 

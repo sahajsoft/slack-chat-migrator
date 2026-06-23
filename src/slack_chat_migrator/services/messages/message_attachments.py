@@ -18,15 +18,23 @@ if TYPE_CHECKING:
 class MessageAttachmentProcessor:
     """Handles file attachments during message creation."""
 
-    def __init__(self, file_handler: FileHandler, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        file_handler: FileHandler,
+        dry_run: bool = False,
+        skip_file_uploads: bool = False,
+    ) -> None:
         """Initialize the attachment processor.
 
         Args:
             file_handler: The FileHandler instance
             dry_run: Whether to run in dry run mode
+            skip_file_uploads: When True, append original Slack file URLs as text
+                instead of downloading and uploading to Drive.
         """
         self.file_handler = file_handler
         self.dry_run = dry_run
+        self.skip_file_uploads = skip_file_uploads
 
     def _get_current_channel(self) -> str | None:
         """Return the current channel name for logging context."""
@@ -73,6 +81,23 @@ class MessageAttachmentProcessor:
 
         if not files:
             return []
+
+        if self.skip_file_uploads:
+            slack_url_attachments = []
+            for file_obj in files:
+                url = file_obj.get("url_private") or file_obj.get("permalink", "")
+                name = file_obj.get("name", "file")
+                if url:
+                    slack_url_attachments.append(
+                        {"slackUrl": {"url": url, "name": name}}
+                    )
+            log_with_context(
+                logging.DEBUG,
+                f"skip_file_uploads: {len(slack_url_attachments)} Slack URL(s)"
+                f" for {len(files)} file(s)",
+                channel=channel,
+            )
+            return slack_url_attachments
 
         if self.dry_run:
             log_with_context(
