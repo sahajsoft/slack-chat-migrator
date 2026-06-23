@@ -11,6 +11,7 @@ import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
@@ -350,7 +351,7 @@ def _execute_reaction_batches(
                 channel=state.context.current_channel,
             )
             batch.execute()
-        except HttpError as e:
+        except (HttpError, RefreshError, TransportError) as e:
             log_with_context(
                 logging.WARNING,
                 f"Reaction batch execution failed for user {email}: {e}",

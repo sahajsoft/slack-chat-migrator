@@ -7,6 +7,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.constants import BOT_SUBTYPES, SYSTEM_SUBTYPES
@@ -307,8 +308,8 @@ def _handle_send_result(
                 ts=ts,
             )
 
-    # Process reactions if any
-    if "reactions" in message and message_name:
+    # Process reactions if any (skipped entirely when skip_reactions is enabled)
+    if "reactions" in message and message_name and not ctx.config.skip_reactions:
         # Store the current message timestamp for context in reaction processing
         state.context.current_message_ts = ts
 
@@ -616,7 +617,7 @@ def send_message(
         )
 
         return SendResult(message_name=message_name)
-    except HttpError as e:
+    except (HttpError, RefreshError, TransportError) as e:
         return _handle_send_error(state, e, message, ts, channel, payload=payload)
 
 
@@ -769,7 +770,7 @@ def send_intro(
         log_with_context(
             logging.INFO, f"Sent intro message to space {space}", channel=channel
         )
-    except HttpError as e:
+    except (HttpError, RefreshError, TransportError) as e:
         log_with_context(
             logging.WARNING,
             f"Failed to send intro message to space {space}: {e}",
