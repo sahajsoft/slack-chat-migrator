@@ -553,8 +553,22 @@ class SlackToChatMigrator:
                 len(self.config.include_channels) if self.config.include_channels else 1
             )
 
+            # For parallel runs, submit only the explicitly listed channels so
+            # all workers start simultaneously.  Submitting all 625 dirs causes
+            # the included channels to start staggered behind fast-cycling
+            # non-included ones, making parallelism effectively sequential.
+            if self.config.include_channels:
+                included_names = {
+                    ch.lstrip("#") for ch in self.config.include_channels
+                }
+                parallel_channels = [
+                    ch for ch in pending_channels if ch.name in included_names
+                ]
+            else:
+                parallel_channels = pending_channels
+
             if workers <= 1:
-                for ch in pending_channels:
+                for ch in parallel_channels:
                     result = _process_one(ch)
                     if result.should_abort:
                         break
@@ -566,11 +580,11 @@ class SlackToChatMigrator:
             else:
                 log_with_context(
                     logging.INFO,
-                    f"Running {len(pending_channels)} channels with {workers} parallel workers",
+                    f"Running {len(parallel_channels)} channels with {workers} parallel workers",
                 )
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     future_to_ch = {
-                        executor.submit(_process_one, ch): ch for ch in pending_channels
+                        executor.submit(_process_one, ch): ch for ch in parallel_channels
                     }
                     for future in as_completed(future_to_ch):
                         ch = future_to_ch[future]
