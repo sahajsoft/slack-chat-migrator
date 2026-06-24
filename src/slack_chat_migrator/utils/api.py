@@ -12,8 +12,6 @@ import threading
 import time
 from typing import Any
 
-import google.auth.transport.httplib2 as _ga_httplib2
-import httplib2 as _httplib2
 from google.auth.exceptions import TransportError
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -576,8 +574,19 @@ def get_gcp_service(
         # (per-thread Http instances, safe to call concurrently).
         with _service_build_lock:
             service = build(api, version, credentials=delegated, cache_discovery=False)
+            # Pre-fetch OAuth2 token while serialized so worker threads skip
+            # the concurrent SSL call to oauth2.googleapis.com on first use.
             try:
+                import google.auth.transport.httplib2 as _ga_httplib2
+                import httplib2 as _httplib2
                 delegated.refresh(_ga_httplib2.Request(_httplib2.Http()))
+            except ImportError:
+                try:
+                    import google.auth.transport.requests as _ga_requests
+                    import requests as _requests_lib
+                    delegated.refresh(_ga_requests.Request(session=_requests_lib.Session()))
+                except Exception:
+                    pass  # Non-fatal — first API call will retry
             except Exception:
                 pass  # Non-fatal — first API call will retry the refresh
 
