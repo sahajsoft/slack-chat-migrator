@@ -5,15 +5,15 @@ from __future__ import annotations
 import datetime
 import json
 import logging
-import time
+import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.constants import (
-    API_THROTTLE_MEMBER_SECONDS,
     CHANNEL_JOIN_SUBTYPE,
     CHANNEL_LEAVE_SUBTYPE,
     DEFAULT_FALLBACK_JOIN_TIME,
@@ -343,10 +343,12 @@ def _add_historical_members_batch(
 
     added_count = 0
     failed_count = 0
+    lock = threading.Lock()
 
+    # Pre-resolve all users before spawning threads (user_resolver not thread-safe)
+    tasks: list[tuple[str, str, dict[str, Any]]] = []  # (user_id, internal_email, membership)
     for user_id, membership in user_membership.items():
         user_email = ctx.user_map.get(user_id)
-
         if not user_email:
             log_with_context(
                 logging.ERROR,
@@ -354,13 +356,10 @@ def _add_historical_members_batch(
                 user_id=user_id,
                 channel=channel,
             )
-            failed_count += 1
+            with lock:
+                failed_count += 1
             continue
-
-        # Get the internal email for this user (handles external users)
         internal_email = user_resolver.get_internal_email(user_id, user_email)
-
-        # Track external users for message attribution
         if user_resolver.is_external_user(user_email):
             log_with_context(
                 logging.INFO,
@@ -370,38 +369,31 @@ def _add_historical_members_batch(
                 channel=channel,
             )
             state.users.external_users.add(user_email)
+        tasks.append((user_id, internal_email, membership))
 
+    def _add_one(user_id: str, internal_email: str, membership: dict[str, Any]) -> bool:
+        """Add a single historical member. Returns True on success."""
+        membership_body = {
+            "member": {"name": f"users/{internal_email}", "type": "HUMAN"},
+            "createTime": membership["join_time"],
+            "deleteTime": membership["leave_time"],
+        }
+        log_with_context(
+            logging.DEBUG,
+            f"Adding user {internal_email} with createTime={membership['join_time']}, deleteTime={membership['leave_time']}",
+            user=internal_email,
+            channel=channel,
+        )
         try:
-            # Create historical membership for this user
-            # In import mode, both createTime AND deleteTime are required
-            # The deleteTime MUST be in the past
-            membership_body = {
-                "member": {"name": f"users/{internal_email}", "type": "HUMAN"},
-                "createTime": membership["join_time"],
-                "deleteTime": membership["leave_time"],
-            }
-
-            log_with_context(
-                logging.DEBUG,
-                f"Adding user {internal_email} with createTime={membership['join_time']}, deleteTime={membership['leave_time']}",
-                user=internal_email,
-                channel=channel,
-            )
-
-            # Use the admin user for adding members
             chat.create_membership(parent=space, body=membership_body)
-
-            added_count += 1
-            if progress_tracker:
-                progress_tracker.member_added(channel)
             log_with_context(
                 logging.DEBUG,
                 f"Added user {internal_email} to space {space} as historical membership",
                 user=internal_email,
                 channel=channel,
             )
+            return True
         except HttpError as e:
-            # If we get a 409 conflict, the user might already be in the space
             if e.resp.status == HTTP_CONFLICT:
                 log_with_context(
                     logging.WARNING,
@@ -409,29 +401,41 @@ def _add_historical_members_batch(
                     user=internal_email,
                     channel=channel,
                 )
-                added_count += 1
-                if progress_tracker:
-                    progress_tracker.member_added(channel)
-            else:
-                log_with_context(
-                    logging.WARNING,
-                    f"Failed to add user {internal_email} to space {space}: "
-                    f"HTTP {e.resp.status} - {e}",
-                    channel=channel,
-                )
-                failed_count += 1
+                return True  # treat as success
+            log_with_context(
+                logging.WARNING,
+                f"Failed to add user {internal_email} to space {space}: "
+                f"HTTP {e.resp.status} - {e}",
+                channel=channel,
+            )
+            return False
         except Exception as e:
             log_with_context(
                 logging.WARNING,
                 f"Unexpected error adding user {internal_email} to space {space}: {e}",
                 user_email=internal_email,
                 space=space,
-                channel=state.context.current_channel,
+                channel=channel,
             )
-            failed_count += 1
+            return False
 
-        # Add a small delay to avoid rate limiting
-        time.sleep(API_THROTTLE_MEMBER_SECONDS)
+    # Run membership API calls in parallel — each is independent I/O.
+    # Reuse parallel_message_workers; fall back to 20 if unset (0/1 = sequential default).
+    workers = ctx.config.parallel_message_workers or 20
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_email = {
+            executor.submit(_add_one, uid, email, mem): email
+            for uid, email, mem in tasks
+        }
+        for future in as_completed(future_to_email):
+            success = future.result()
+            with lock:
+                if success:
+                    added_count += 1
+                    if progress_tracker:
+                        progress_tracker.member_added(channel)
+                else:
+                    failed_count += 1
 
     # Log summary
     active_count = len(active_users)
