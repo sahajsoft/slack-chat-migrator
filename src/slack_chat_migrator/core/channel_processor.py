@@ -336,6 +336,7 @@ class ChannelProcessor:
         # Fast-forward past already-processed messages using the checkpoint
         # timestamp so resume doesn't iterate through thousands of skips.
         last_ts = self.state.progress.last_processed_timestamps.get(channel, 0)
+        skipped = 0
         if last_ts > 0:
             before = len(msgs)
             msgs = [m for m in msgs if float(m.get("ts", 0)) > last_ts]
@@ -346,12 +347,20 @@ class ChannelProcessor:
                     f"[RESUME] Fast-forwarded past {skipped} already-processed messages for {channel}",
                     channel=channel,
                 )
+                # Advance the progress bar to the correct starting position so
+                # the UI shows cumulative progress (e.g. 8487/13541) rather
+                # than resetting to 0 after fast-forward.
+                if self.progress_tracker:
+                    self.progress_tracker.message_sent(
+                        channel, count=skipped, total=message_count
+                    )
 
         # Build user map with overrides once per channel.
         cached_user_map = build_user_map_with_overrides(self.ctx, self.user_resolver)
 
         processed_count, failed_count, channel_had_errors = self._send_messages_loop(
-            msgs, space, channel, channel_had_errors, cached_user_map
+            msgs, space, channel, channel_had_errors, cached_user_map,
+            progress_offset=skipped,
         )
 
         log_with_context(
@@ -417,6 +426,7 @@ class ChannelProcessor:
         channel: str,
         channel_had_errors: bool,
         user_map_with_overrides: dict[str, str] | None = None,
+        progress_offset: int = 0,
     ) -> tuple[int, int, bool]:
         """Iterate over messages, sending each and tracking results.
 
@@ -483,7 +493,9 @@ class ChannelProcessor:
                 processed_count += 1
                 if self.progress_tracker:
                     self.progress_tracker.message_sent(
-                        channel, count=processed_count, total=total_sendable
+                        channel,
+                        count=progress_offset + processed_count,
+                        total=progress_offset + total_sendable,
                     )
                 if (
                     self.on_partial_progress

@@ -475,6 +475,15 @@ class SlackToChatMigrator:
                 # Restore per-channel message progress so already-sent messages are skipped
                 for ch_name, last_ts in checkpoint.partial_channels.items():
                     self.state.progress.last_processed_timestamps[ch_name] = last_ts
+                # Restore space names so resume reuses existing import-mode spaces.
+                # Import-mode spaces are invisible to spaces.list(), so API discovery
+                # always fails — the checkpoint is the only reliable source of truth.
+                for ch_name, space_name in checkpoint.space_names.items():
+                    self.state.spaces.created_spaces[ch_name] = space_name
+                    log_with_context(
+                        logging.INFO,
+                        f"[RESUME] Restored space mapping: {ch_name} -> {space_name}",
+                    )
             else:
                 checkpoint = CheckpointData(started_at=now_iso())
 
@@ -522,6 +531,9 @@ class SlackToChatMigrator:
             def _save_partial_progress(channel: str, last_ts: float) -> None:
                 with checkpoint_lock:
                     checkpoint.partial_channels[channel] = last_ts
+                    space_name = self.state.spaces.space_cache.get(channel)
+                    if space_name:
+                        checkpoint.space_names[channel] = space_name
                     save_checkpoint(checkpoint_path, checkpoint)
 
             pending_channels = [
@@ -576,6 +588,9 @@ class SlackToChatMigrator:
                         with checkpoint_lock:
                             checkpoint.partial_channels.pop(ch.name, None)
                             checkpoint.completed_channels[ch.name] = now_iso()
+                            space_name = self.state.spaces.space_cache.get(ch.name)
+                            if space_name:
+                                checkpoint.space_names[ch.name] = space_name
                             save_checkpoint(checkpoint_path, checkpoint)
             else:
                 log_with_context(
@@ -605,6 +620,9 @@ class SlackToChatMigrator:
                             with checkpoint_lock:
                                 checkpoint.partial_channels.pop(ch.name, None)
                                 checkpoint.completed_channels[ch.name] = now_iso()
+                                space_name = self.state.spaces.space_cache.get(ch.name)
+                                if space_name:
+                                    checkpoint.space_names[ch.name] = space_name
                                 save_checkpoint(checkpoint_path, checkpoint)
 
             self._emit_phase("Finalizing")
