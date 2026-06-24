@@ -7,10 +7,13 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import ssl
 import threading
 import time
 from typing import Any
 
+import google.auth.transport.httplib2 as _ga_httplib2
+import httplib2 as _httplib2
 from google.auth.exceptions import TransportError
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -18,6 +21,11 @@ from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.constants import HTTP_RATE_LIMIT
 from slack_chat_migrator.utils.logging import log_with_context
+
+# Force OpenSSL global initialization now, in the main (importing) thread,
+# before any worker threads are created.  Concurrent first-use initialization
+# of OpenSSL on macOS is not thread-safe and causes SIGTRAP crashes.
+ssl.create_default_context()
 
 logger = logging.getLogger("slack_chat_migrator")
 
@@ -557,10 +565,21 @@ def get_gcp_service(
         # Impersonate the target user
         delegated = creds.with_subject(user_email)
 
-        # Build the API service object — serialized to avoid concurrent SSL
-        # initialization crashing macOS's httplib2/OpenSSL global state.
+        # Build service and pre-fetch OAuth2 token — both serialized.
+        # There are two macOS SSL crash vectors when many threads start at once:
+        #   1. build() → SSL to discovery endpoint
+        #   2. First API call → AuthorizedHttp refreshes token via SSL to
+        #      oauth2.googleapis.com
+        # Doing both inside the lock means each thread's cold-start SSL work
+        # is serialized.  Once the token is cached on `delegated`, worker
+        # threads skip the refresh and go directly to chat.googleapis.com
+        # (per-thread Http instances, safe to call concurrently).
         with _service_build_lock:
             service = build(api, version, credentials=delegated, cache_discovery=False)
+            try:
+                delegated.refresh(_ga_httplib2.Request(_httplib2.Http()))
+            except Exception:
+                pass  # Non-fatal — first API call will retry the refresh
 
         # Wrap the service with retry logic
         # Use the explicitly passed channel parameter for context
