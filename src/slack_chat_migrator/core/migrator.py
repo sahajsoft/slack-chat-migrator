@@ -475,15 +475,6 @@ class SlackToChatMigrator:
                 # Restore per-channel message progress so already-sent messages are skipped
                 for ch_name, last_ts in checkpoint.partial_channels.items():
                     self.state.progress.last_processed_timestamps[ch_name] = last_ts
-                # Restore space names so resume reuses existing import-mode spaces.
-                # Import-mode spaces are invisible to spaces.list(), so API discovery
-                # always fails — the checkpoint is the only reliable source of truth.
-                for ch_name, space_name in checkpoint.space_names.items():
-                    self.state.spaces.created_spaces[ch_name] = space_name
-                    log_with_context(
-                        logging.INFO,
-                        f"[RESUME] Restored space mapping: {ch_name} -> {space_name}",
-                    )
             else:
                 checkpoint = CheckpointData(started_at=now_iso())
 
@@ -514,6 +505,18 @@ class SlackToChatMigrator:
                     log_with_context(
                         logging.WARNING,
                         "[UPDATE MODE] No existing spaces found via API. Will create new spaces.",
+                    )
+
+            # Restore space names from checkpoint AFTER API discovery so they always
+            # take priority.  Import-mode spaces are invisible to spaces.list(), so
+            # discovery always returns nothing for them — the checkpoint is the only
+            # reliable source of truth for which space to continue sending to.
+            if checkpoint.space_names:
+                for ch_name, space_name in checkpoint.space_names.items():
+                    self.state.spaces.created_spaces[ch_name] = space_name
+                    log_with_context(
+                        logging.INFO,
+                        f"[RESUME] Restored space mapping from checkpoint: {ch_name} -> {space_name}",
                     )
 
             # Get all channel directories
