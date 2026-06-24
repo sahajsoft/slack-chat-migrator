@@ -68,15 +68,19 @@ class UserResolver:
     def get_delegate(self, email: str) -> ChatAdapter:
         """Get a Google Chat API service with user impersonation.
 
+        Returns a thread-local ChatAdapter so parallel workers each get their
+        own httplib2.Http connection — sharing a single adapter across threads
+        causes heap corruption on macOS (concurrent socket writes).
+
         Args:
             email: The Google Workspace email to impersonate.
 
         Returns:
-            A ChatAdapter wrapping an impersonated service, or the admin
-            adapter on failure.
+            A ChatAdapter wrapping a thread-local impersonated service, or a
+            thread-local admin adapter on failure.
         """
         if not email:
-            return self.chat
+            return self._thread_local_admin()
 
         if self.creds_path is None:
             raise RuntimeError(
@@ -99,7 +103,6 @@ class UserResolver:
                 # Validate impersonation with a lightweight API call
                 raw_service.spaces().list(pageSize=1).execute()
                 self.state.users.valid_users[email] = True
-                self.state.users.chat_delegates[email] = ChatAdapter(raw_service)
             except Exception as e:
                 error_code = e.resp.status if isinstance(e, HttpError) else "N/A"
                 log_with_context(
@@ -109,9 +112,42 @@ class UserResolver:
                     error_code=error_code,
                 )
                 self.state.users.valid_users[email] = False
-                return self.chat
+                return self._thread_local_admin()
 
-        return self.state.users.chat_delegates.get(email, self.chat)
+        if not self.state.users.valid_users.get(email, False):
+            return self._thread_local_admin()
+
+        # get_gcp_service caches the raw service in thread-local storage, so
+        # each worker thread gets its own httplib2.Http — safe for concurrent sends.
+        raw_service = get_gcp_service(
+            str(self.creds_path),
+            email,
+            "chat",
+            "v1",
+            self.state.context.current_channel,
+            max_retries=self.config.max_retries,
+            retry_delay=self.config.retry_delay,
+        )
+        return ChatAdapter(raw_service)
+
+    def _thread_local_admin(self) -> ChatAdapter:
+        """Return a thread-local admin ChatAdapter.
+
+        Falls back to ``self.chat`` in dry-run mode (no creds) or when no
+        workspace admin is configured.
+        """
+        if self.creds_path is None or self.workspace_admin is None:
+            return self.chat
+        raw_service = get_gcp_service(
+            str(self.creds_path),
+            self.workspace_admin,
+            "chat",
+            "v1",
+            self.state.context.current_channel,
+            max_retries=self.config.max_retries,
+            retry_delay=self.config.retry_delay,
+        )
+        return ChatAdapter(raw_service)
 
     def get_internal_email(
         self, user_id: str, user_email: str | None = None

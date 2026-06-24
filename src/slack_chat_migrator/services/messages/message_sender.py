@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 
-from slack_chat_migrator.constants import BOT_SUBTYPES, SYSTEM_SUBTYPES
+from slack_chat_migrator.constants import BOT_SUBTYPES, HTTP_CONFLICT, SYSTEM_SUBTYPES
 from slack_chat_migrator.services.messages.message_builder import (
     build_message_payload,
     build_user_map_with_overrides,
@@ -357,8 +357,20 @@ def _handle_send_error(
 
     Returns a :class:`SendResult` encoding the error details.
     """
-    error_message = f"Failed to send message: {error}"
     status_code: int | None = error.resp.status if hasattr(error, "resp") else None
+
+    # 409 means the message was already sent in a prior (crashed) run.
+    # Treat it as a successful skip rather than a failure.
+    if status_code == HTTP_CONFLICT:
+        log_with_context(
+            logging.DEBUG,
+            f"Message {ts} already exists in space (409) — skipping duplicate",
+            channel=channel,
+            ts=ts,
+        )
+        return SendResult(skipped=MessageResult.ALREADY_SENT)
+
+    error_message = f"Failed to send message: {error}"
     error_code_display = status_code if status_code is not None else "unknown"
     error_details = (
         error.content.decode("utf-8") if hasattr(error, "content") else str(error)

@@ -552,23 +552,27 @@ class ChannelProcessor:
             channel=channel,
         )
 
-        for batch_start in range(0, len(sendable), workers):
-            batch = [
-                m for m in sendable[batch_start : batch_start + workers]
-                if m.get("ts") not in processed_ts_set
-            ]
-            if not batch:
-                continue
+        # One executor for ALL batches: threads survive across batches and reuse
+        # their thread-local httplib2.Http connections.  A fresh executor per
+        # batch would destroy those threads, forcing every batch to re-acquire
+        # _service_build_lock (~2 s each x 30 threads = ~60 s per batch).
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for batch_start in range(0, len(sendable), workers):
+                batch = [
+                    m for m in sendable[batch_start : batch_start + workers]
+                    if m.get("ts") not in processed_ts_set
+                ]
+                if not batch:
+                    continue
 
-            # Stats tracking is fast and writes shared counters — run sequentially.
-            for m in batch:
-                track_message_stats(
-                    self.ctx, self.state, self.user_resolver,
-                    self.attachment_processor, m,
-                )
+                # Stats tracking is fast and writes shared counters — run sequentially.
+                for m in batch:
+                    track_message_stats(
+                        self.ctx, self.state, self.user_resolver,
+                        self.attachment_processor, m,
+                    )
 
-            # API sends are slow (network I/O) — run concurrently.
-            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                # API sends are slow (network I/O) — run concurrently.
                 future_to_m = {
                     executor.submit(
                         send_message,
@@ -628,10 +632,10 @@ class ChannelProcessor:
                                     total=progress_offset + total_sendable,
                                 )
 
-            # All messages in batch are done — safe to checkpoint at batch's last ts.
-            batch_last_ts = float(batch[-1]["ts"])
-            if self.on_partial_progress:
-                self.on_partial_progress(channel, batch_last_ts)
+                # All messages in batch are done — safe to checkpoint at batch's last ts.
+                batch_last_ts = float(batch[-1]["ts"])
+                if self.on_partial_progress:
+                    self.on_partial_progress(channel, batch_last_ts)
 
         if channel_failures:
             self.state.messages.failed_messages_by_channel[channel] = channel_failures
