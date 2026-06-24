@@ -90,6 +90,9 @@ class MigrationConfig:
     skip_file_uploads: bool = False  # append Slack URLs as text; no Drive upload
     skip_reactions: bool = False  # skip all emoji reaction processing
 
+    # Parallel message sending (0 = sequential, N = N concurrent workers per channel)
+    parallel_message_workers: int = 0
+
     def __post_init__(self) -> None:
         """Validate configuration values after initialization."""
         if self.max_retries < 0:
@@ -132,6 +135,7 @@ class MigrationConfig:
             make_spaces_discoverable=data.get("make_spaces_discoverable", False),
             skip_file_uploads=data.get("skip_file_uploads", False),
             skip_reactions=data.get("skip_reactions", False),
+            parallel_message_workers=data.get("parallel_message_workers", 0),
         )
 
 

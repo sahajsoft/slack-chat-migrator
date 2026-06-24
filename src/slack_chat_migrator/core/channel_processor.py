@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import traceback
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -432,6 +434,13 @@ class ChannelProcessor:
 
         Returns (processed_count, failed_count, channel_had_errors).
         """
+        workers = self.ctx.config.parallel_message_workers
+        if workers > 1:
+            return self._send_messages_parallel(
+                msgs, space, channel, channel_had_errors,
+                user_map_with_overrides, progress_offset, workers,
+            )
+
         processed_ts: list[str] = []
         processed_count = 0
         failed_count = 0
@@ -506,6 +515,123 @@ class ChannelProcessor:
             time.sleep(
                 API_THROTTLE_MESSAGE_SECONDS
             )  # Throttle to avoid Chat API rate limits
+
+        if channel_failures:
+            self.state.messages.failed_messages_by_channel[channel] = channel_failures
+            channel_had_errors = True
+
+        return processed_count, failed_count, channel_had_errors
+
+    def _send_messages_parallel(
+        self,
+        msgs: list[dict[str, Any]],
+        space: str,
+        channel: str,
+        channel_had_errors: bool,
+        user_map_with_overrides: dict[str, str] | None = None,
+        progress_offset: int = 0,
+        workers: int = 30,
+    ) -> tuple[int, int, bool]:
+        """Send messages in parallel batches of `workers` size.
+
+        Each batch is fully completed before checkpointing, so the checkpoint
+        ts is always safe to resume from with no missing messages.
+        """
+        sendable = [m for m in msgs if m.get("type") == "message"]
+        total_sendable = len(sendable)
+        max_failure_percentage = self.ctx.config.max_failure_percentage
+        channel_failures: list[str] = []
+        processed_ts_set: set[str] = set()
+        processed_count = 0
+        failed_count = 0
+        lock = threading.Lock()
+
+        log_with_context(
+            logging.INFO,
+            f"[PARALLEL] Sending {total_sendable} messages with {workers} workers for {channel}",
+            channel=channel,
+        )
+
+        for batch_start in range(0, len(sendable), workers):
+            batch = [
+                m for m in sendable[batch_start : batch_start + workers]
+                if m.get("ts") not in processed_ts_set
+            ]
+            if not batch:
+                continue
+
+            # Stats tracking is fast and writes shared counters — run sequentially.
+            for m in batch:
+                track_message_stats(
+                    self.ctx, self.state, self.user_resolver,
+                    self.attachment_processor, m,
+                )
+
+            # API sends are slow (network I/O) — run concurrently.
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                future_to_m = {
+                    executor.submit(
+                        send_message,
+                        self.ctx, self.state, self.chat,
+                        self.user_resolver, self.attachment_processor,
+                        space, m, user_map_with_overrides,
+                    ): m
+                    for m in batch
+                }
+
+                for future in as_completed(future_to_m):
+                    m = future_to_m[future]
+                    ts = m["ts"]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        log_with_context(
+                            logging.ERROR,
+                            f"Unexpected error sending message {ts}: {exc}",
+                            channel=channel,
+                        )
+                        with lock:
+                            failed_count += 1
+                            channel_failures.append(ts)
+                        continue
+
+                    with lock:
+                        if result.failed:
+                            failed_count += 1
+                            channel_failures.append(ts)
+                            if self.progress_tracker:
+                                self.progress_tracker.message_failed(
+                                    channel, detail=result.error
+                                )
+                            if processed_count > 0:
+                                failure_pct = (
+                                    failed_count / (processed_count + failed_count) * 100
+                                )
+                                if failure_pct > max_failure_percentage:
+                                    log_with_context(
+                                        logging.WARNING,
+                                        f"Failure rate {failure_pct:.1f}% exceeds threshold "
+                                        f"{max_failure_percentage}% for {channel}",
+                                        channel=channel,
+                                    )
+                                    channel_had_errors = True
+                                    self.state.errors.high_failure_rate_channels[
+                                        channel
+                                    ] = failure_pct
+                        elif result.skipped != MessageResult.SKIPPED:
+                            processed_ts_set.add(ts)
+                            processed_count += 1
+                            if self.progress_tracker:
+                                self.progress_tracker.message_sent(
+                                    channel,
+                                    count=progress_offset + processed_count,
+                                    total=progress_offset + total_sendable,
+                                )
+
+            # All messages in batch are done — safe to checkpoint at batch's last ts.
+            batch_last_ts = float(batch[-1]["ts"])
+            if self.on_partial_progress:
+                self.on_partial_progress(channel, batch_last_ts)
 
         if channel_failures:
             self.state.messages.failed_messages_by_channel[channel] = channel_failures

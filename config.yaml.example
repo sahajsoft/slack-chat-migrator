@@ -70,3 +70,13 @@ make_spaces_discoverable: true
 # Set both to false (or remove) to restore full migration behaviour.
 skip_file_uploads: false
 skip_reactions: false
+
+# parallel_message_workers: number of concurrent API workers per channel.
+#   0 or 1 = sequential (default, safest)
+#   30     = 30 concurrent sends per channel — ~8-10x faster for large channels
+#
+# Each worker builds its own credentials and sends independently. On crash/resume,
+# the checkpoint rolls back to the last completed batch boundary (at most
+# `parallel_message_workers` messages may be re-sent, but never skipped).
+# Google Chat API limit is 3000 writes/min; 30 workers stays well within that.
+parallel_message_workers: 0
