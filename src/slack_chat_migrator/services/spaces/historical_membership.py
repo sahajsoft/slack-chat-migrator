@@ -22,7 +22,7 @@ from slack_chat_migrator.constants import (
     HISTORICAL_DELETE_TIME_OFFSET_SECONDS,
     HTTP_CONFLICT,
 )
-from slack_chat_migrator.utils.api import slack_ts_to_rfc3339
+from slack_chat_migrator.utils.api import get_gcp_service, slack_ts_to_rfc3339
 from slack_chat_migrator.utils.logging import log_with_context
 
 if TYPE_CHECKING:
@@ -385,7 +385,18 @@ def _add_historical_members_batch(
             channel=channel,
         )
         try:
-            chat.create_membership(parent=space, body=membership_body)
+            # Use get_gcp_service so each thread gets its own HTTP connection
+            # from the thread-local cache rather than sharing the caller's service.
+            svc = get_gcp_service(
+                ctx.creds_path,
+                ctx.workspace_admin,
+                "chat",
+                "v1",
+                channel=channel,
+                max_retries=ctx.config.max_retries,
+                retry_delay=ctx.config.retry_delay,
+            )
+            svc.spaces().members().create(parent=space, body=membership_body).execute()
             log_with_context(
                 logging.DEBUG,
                 f"Added user {internal_email} to space {space} as historical membership",
