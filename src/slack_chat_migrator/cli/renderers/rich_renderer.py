@@ -279,7 +279,10 @@ class RichProgressRenderer:
     def _on_message_sent(self, event: ProgressEvent) -> None:
         self._messages_sent += 1
         ch = event.channel or ""
-        self._channel_msg_counts[ch] = self._channel_msg_counts.get(ch, 0) + 1
+        if event.count is not None:
+            self._channel_msg_counts[ch] = event.count
+        else:
+            self._channel_msg_counts[ch] = self._channel_msg_counts.get(ch, 0) + 1
         now = time.time()
         self._recent_msg_times.append(now)
         cutoff = now - 10.0
