@@ -365,6 +365,42 @@ class ChannelProcessor:
             progress_offset=skipped,
         )
 
+        # Retry failed messages up to 2 times (handles transient network errors).
+        _MAX_SEND_RETRIES = 2
+        for retry_num in range(1, _MAX_SEND_RETRIES + 1):
+            failed_ts = set(
+                self.state.messages.failed_messages_by_channel.get(channel, [])
+            )
+            if not failed_ts:
+                break
+            retry_msgs = [m for m in msgs if m.get("ts") in failed_ts]
+            if not retry_msgs:
+                break
+
+            log_with_context(
+                logging.INFO,
+                f"[RETRY {retry_num}/{_MAX_SEND_RETRIES}] Re-sending {len(retry_msgs)}"
+                f" failed messages for {channel}",
+                channel=channel,
+            )
+
+            # Remove the previous failure records so they don't double-count
+            # if they succeed on retry.
+            self.state.messages.failed_messages_by_channel.pop(channel, None)
+            self.state.messages.failed_messages = [
+                fm
+                for fm in self.state.messages.failed_messages
+                if not (fm["channel"] == channel and fm["ts"] in failed_ts)
+            ]
+
+            retry_processed, retry_failed, channel_had_errors = self._send_messages_loop(
+                retry_msgs, space, channel, channel_had_errors, cached_user_map,
+                progress_offset=skipped + processed_count,
+            )
+            processed_count += retry_processed
+            # Replace failed_count: net of messages that still fail after retry
+            failed_count = failed_count - len(failed_ts) + retry_failed
+
         log_with_context(
             logging.INFO,
             f"Channel {channel} message import: processed {processed_count}, failed {failed_count}",
