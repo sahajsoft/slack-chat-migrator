@@ -140,6 +140,55 @@ def _list_spaces_in_import_mode(
     return import_mode_spaces
 
 
+def _check_checkpoint_spaces(
+    chat: ChatAdapter,
+    state: MigrationState,
+    already_found: set[str],
+) -> list[tuple[str, dict]]:
+    """Check spaces from the checkpoint that may not appear in list_spaces.
+
+    Import-mode spaces are invisible to the impersonated admin user via
+    list_spaces if the admin was never added as a member.  This function
+    directly probes each space stored in the checkpoint's created_spaces
+    mapping and returns any that are still in import mode.
+
+    Args:
+        chat: Google Chat API service.
+        state: Migration state with created_spaces populated from checkpoint.
+        already_found: Space resource names already discovered via list_spaces.
+
+    Returns:
+        List of (space_name, space_info) tuples not already in already_found.
+    """
+    extras: list[tuple[str, dict]] = []
+    for channel, space_name in state.spaces.created_spaces.items():
+        if space_name in already_found:
+            continue
+        try:
+            space_info = chat.get_space(space_name)
+            if space_info.get("importMode"):
+                log_with_context(
+                    logging.WARNING,
+                    f"Checkpoint space {space_name} (channel={channel}) is in import mode"
+                    " but not visible via list_spaces — adding to cleanup list",
+                    space_name=space_name,
+                )
+                extras.append((space_name, space_info))
+        except HttpError as e:
+            log_with_context(
+                logging.WARNING,
+                f"Could not check checkpoint space {space_name}: {e.resp.status}",
+                space_name=space_name,
+            )
+        except (RefreshError, TransportError) as e:
+            log_with_context(
+                logging.WARNING,
+                f"Could not check checkpoint space {space_name}: {e}",
+                space_name=space_name,
+            )
+    return extras
+
+
 def run_cleanup(
     ctx: MigrationContext,
     state: MigrationState,
@@ -173,6 +222,12 @@ def run_cleanup(
         import_mode_spaces = _list_spaces_in_import_mode(chat)
         if import_mode_spaces is None:
             return
+
+        # Also check checkpoint spaces that may be invisible via list_spaces
+        # (import-mode spaces are hidden from users who aren't members).
+        already_found = {s for s, _ in import_mode_spaces}
+        checkpoint_extras = _check_checkpoint_spaces(chat, state, already_found)
+        import_mode_spaces = import_mode_spaces + checkpoint_extras
 
         if import_mode_spaces:
             _complete_import_mode_spaces(
