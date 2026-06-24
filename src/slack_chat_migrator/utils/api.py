@@ -54,6 +54,14 @@ REQUIRED_SCOPES = [
 _thread_local = threading.local()
 _SERVICE_CACHE_TTL = 2700  # 45 minutes
 
+# Serialize the googleapiclient build() call across threads.
+# httplib2's SSL initialization touches global C-level state that is not
+# safe to call concurrently on macOS — doing so triggers a SIGTRAP crash
+# ("Python quit unexpectedly" popup).  The lock is only held during the
+# one-time cold-start build per thread; all subsequent calls return the
+# cached service and never enter this path.
+_service_build_lock = threading.Lock()
+
 
 def _get_thread_cache() -> dict[str, tuple[Any, float]]:
     if not hasattr(_thread_local, "service_cache"):
@@ -549,8 +557,10 @@ def get_gcp_service(
         # Impersonate the target user
         delegated = creds.with_subject(user_email)
 
-        # Build the API service object
-        service = build(api, version, credentials=delegated, cache_discovery=False)
+        # Build the API service object — serialized to avoid concurrent SSL
+        # initialization crashing macOS's httplib2/OpenSSL global state.
+        with _service_build_lock:
+            service = build(api, version, credentials=delegated, cache_discovery=False)
 
         # Wrap the service with retry logic
         # Use the explicitly passed channel parameter for context
