@@ -12,6 +12,7 @@ from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.core.cleanup import (
+    _check_checkpoint_spaces,
     _complete_import_mode_spaces,
     _complete_single_space,
     _list_spaces_in_import_mode,
@@ -721,7 +722,7 @@ class TestCompleteSingleSpace:
     def test_complete_import_http_error_4xx_returns_early(
         self, mock_members: MagicMock
     ) -> None:
-        """A 4xx HttpError during completeImport returns early (no server warning)."""
+        """A generic 4xx HttpError during completeImport returns early."""
         ctx = _make_ctx()
         state = MigrationState()
         chat = _mock_chat(complete_import_side_effect=_http_error(400, "Bad Request"))
@@ -740,6 +741,50 @@ class TestCompleteSingleSpace:
             )
 
         mock_members.assert_not_called()
+
+    def test_complete_import_already_completed_continues_to_members(
+        self, mock_members: MagicMock
+    ) -> None:
+        """A 400 'already completed' response falls through to add_regular_members.
+
+        This handles the case where a prior --complete run took the space out of
+        import mode but then crashed before adding members.
+        """
+        ctx = _make_ctx()
+        state = MigrationState()
+        state.spaces.channel_to_space = {"general": "spaces/abc"}
+        chat = _mock_chat(
+            complete_import_side_effect=_http_error(
+                400, "Import mode has already been completed for this space"
+            )
+        )
+        space_info = {"name": "spaces/abc", "displayName": "Slack #general"}
+
+        _complete_single_space(
+            ctx, state, chat, MagicMock(), None, "spaces/abc", space_info
+        )
+
+        mock_members.assert_called_once()
+
+    def test_complete_import_not_in_import_mode_continues_to_members(
+        self, mock_members: MagicMock
+    ) -> None:
+        """A 400 'not in import mode' response falls through to add_regular_members."""
+        ctx = _make_ctx()
+        state = MigrationState()
+        state.spaces.channel_to_space = {"general": "spaces/abc"}
+        chat = _mock_chat(
+            complete_import_side_effect=_http_error(
+                400, "This space is not in import mode"
+            )
+        )
+        space_info = {"name": "spaces/abc", "displayName": "Slack #general"}
+
+        _complete_single_space(
+            ctx, state, chat, MagicMock(), None, "spaces/abc", space_info
+        )
+
+        mock_members.assert_called_once()
 
     def test_complete_import_refresh_error_returns_early(
         self, mock_members: MagicMock
@@ -936,6 +981,98 @@ class TestCompleteSingleSpace:
 
         chat.patch_space.assert_not_called()
         mock_members.assert_called_once()
+
+
+# ===================================================================
+# TestCheckCheckpointSpaces
+# ===================================================================
+
+
+class TestCheckCheckpointSpaces:
+    """Tests for _check_checkpoint_spaces."""
+
+    def test_403_adds_space_to_cleanup_list(self) -> None:
+        """A 403 on a checkpoint space adds it optimistically for completeImport.
+
+        Import-mode spaces are invisible to the admin if they were never added as
+        a historical member.  get_space() returns 403 — but completeImport can
+        still succeed because it only needs chat.import scope, not membership.
+        """
+        state = MigrationState()
+        state.spaces.created_spaces = {"general": "spaces/hidden"}
+
+        chat = MagicMock()
+        chat.get_space.side_effect = _http_error(403, "Permission Denied")
+
+        result = _check_checkpoint_spaces(chat, state, already_found=set())
+
+        assert len(result) == 1
+        assert result[0][0] == "spaces/hidden"
+        assert result[0][1].get("importMode") is True
+
+    def test_404_skips_space(self) -> None:
+        """A non-403 HTTP error (e.g. 404) for a checkpoint space is silently skipped."""
+        state = MigrationState()
+        state.spaces.created_spaces = {"general": "spaces/deleted"}
+
+        chat = MagicMock()
+        chat.get_space.side_effect = _http_error(404, "Not Found")
+
+        result = _check_checkpoint_spaces(chat, state, already_found=set())
+
+        assert len(result) == 0
+
+    def test_already_found_space_skipped(self) -> None:
+        """A checkpoint space already in already_found is not re-checked."""
+        state = MigrationState()
+        state.spaces.created_spaces = {"general": "spaces/abc"}
+
+        chat = MagicMock()
+        chat.get_space.return_value = {"importMode": True}
+
+        result = _check_checkpoint_spaces(
+            chat, state, already_found={"spaces/abc"}
+        )
+
+        assert len(result) == 0
+        chat.get_space.assert_not_called()
+
+    def test_import_mode_space_added(self) -> None:
+        """A visible checkpoint space still in import mode is added to the result."""
+        state = MigrationState()
+        state.spaces.created_spaces = {"general": "spaces/abc"}
+
+        chat = MagicMock()
+        chat.get_space.return_value = {"name": "spaces/abc", "importMode": True}
+
+        result = _check_checkpoint_spaces(chat, state, already_found=set())
+
+        assert len(result) == 1
+        assert result[0][0] == "spaces/abc"
+
+    def test_completed_space_not_added(self) -> None:
+        """A checkpoint space that is already out of import mode is not added."""
+        state = MigrationState()
+        state.spaces.created_spaces = {"general": "spaces/abc"}
+
+        chat = MagicMock()
+        chat.get_space.return_value = {"name": "spaces/abc", "importMode": False}
+
+        result = _check_checkpoint_spaces(chat, state, already_found=set())
+
+        assert len(result) == 0
+
+    def test_transport_error_skips_space(self) -> None:
+        """A TransportError for a checkpoint space is skipped without raising."""
+        state = MigrationState()
+        state.spaces.created_spaces = {"general": "spaces/abc"}
+
+        chat = MagicMock()
+        chat.get_space.side_effect = TransportError("network error")
+
+        result = _check_checkpoint_spaces(chat, state, already_found=set())
+
+        assert len(result) == 0
 
 
 # ===================================================================

@@ -71,12 +71,26 @@ def _make_resolver(
 class TestGetDelegate:
     """Tests for UserResolver.get_delegate."""
 
-    def test_empty_email_returns_admin_chat(self):
+    @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
+    def test_empty_email_returns_admin_chat(self, mock_get_service):
         resolver = _make_resolver()
+        mock_admin_svc = MagicMock(name="admin_service")
+        mock_get_service.return_value = mock_admin_svc
 
         result = resolver.get_delegate("")
 
-        assert result is resolver.chat
+        # Returns thread-local admin ChatAdapter (not self.chat directly)
+        assert isinstance(result, ChatAdapter)
+        assert result._svc is mock_admin_svc
+        mock_get_service.assert_called_once_with(
+            str(resolver.creds_path),
+            resolver.workspace_admin,
+            "chat",
+            "v1",
+            resolver.state.context.current_channel,
+            max_retries=resolver.config.max_retries,
+            retry_delay=resolver.config.retry_delay,
+        )
 
     @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
     def test_valid_email_first_call_creates_and_caches_service(self, mock_get_service):
@@ -86,35 +100,27 @@ class TestGetDelegate:
 
         result = resolver.get_delegate("user@example.com")
 
-        mock_get_service.assert_called_once_with(
-            str(resolver.creds_path),
-            "user@example.com",
-            "chat",
-            "v1",
-            "general",
-            max_retries=resolver.config.max_retries,
-            retry_delay=resolver.config.retry_delay,
-        )
+        # get_gcp_service called twice: once for validation, once for the return value
+        assert mock_get_service.call_count == 2
         mock_service.spaces.return_value.list.return_value.execute.assert_called_once()
         assert resolver.state.users.valid_users["user@example.com"] is True
-        # Delegate is now wrapped in ChatAdapter
-        cached = resolver.state.users.chat_delegates["user@example.com"]
-        assert isinstance(cached, ChatAdapter)
-        assert cached._svc is mock_service
         assert isinstance(result, ChatAdapter)
         assert result._svc is mock_service
 
     @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
     def test_valid_email_already_cached_returns_from_cache(self, mock_get_service):
         resolver = _make_resolver()
-        cached_service = MagicMock(name="cached_service")
+        mock_service = MagicMock(name="service")
+        mock_get_service.return_value = mock_service
+        # User already validated in a prior call — skip validation, return service
         resolver.state.users.valid_users["user@example.com"] = True
-        resolver.state.users.chat_delegates["user@example.com"] = cached_service
 
         result = resolver.get_delegate("user@example.com")
 
-        mock_get_service.assert_not_called()
-        assert result is cached_service
+        # Only one get_gcp_service call: validation skipped, service returned
+        mock_get_service.assert_called_once()
+        assert isinstance(result, ChatAdapter)
+        assert result._svc is mock_service
 
     @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
     def test_http_error_falls_back_to_admin_chat(self, mock_get_service):
@@ -129,30 +135,39 @@ class TestGetDelegate:
 
         result = resolver.get_delegate("bad@example.com")
 
-        assert result is resolver.chat
+        # Falls back to thread-local admin ChatAdapter
+        assert isinstance(result, ChatAdapter)
+        assert result._svc is mock_service
         assert resolver.state.users.valid_users["bad@example.com"] is False
 
     @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
     def test_refresh_error_falls_back_to_admin_chat(self, mock_get_service):
         resolver = _make_resolver()
 
-        mock_get_service.side_effect = RefreshError("token expired")
+        mock_admin_service = MagicMock(name="admin_service")
+        # First call (user impersonation) raises RefreshError; second (admin fallback) succeeds
+        mock_get_service.side_effect = [RefreshError("token expired"), mock_admin_service]
 
         result = resolver.get_delegate("expired@example.com")
 
-        assert result is resolver.chat
+        assert isinstance(result, ChatAdapter)
+        assert result._svc is mock_admin_service
         assert resolver.state.users.valid_users["expired@example.com"] is False
 
     @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
     def test_invalid_user_cached_returns_admin_chat(self, mock_get_service):
         """Second call for a previously-failed user returns admin chat without retrying."""
         resolver = _make_resolver()
+        mock_admin_service = MagicMock(name="admin_service")
+        mock_get_service.return_value = mock_admin_service
         resolver.state.users.valid_users["bad@example.com"] = False
 
         result = resolver.get_delegate("bad@example.com")
 
-        mock_get_service.assert_not_called()
-        assert result is resolver.chat
+        # No validation retry; _thread_local_admin() calls get_gcp_service once
+        mock_get_service.assert_called_once()
+        assert isinstance(result, ChatAdapter)
+        assert result._svc is mock_admin_service
 
 
 # ===========================================================================
@@ -500,10 +515,13 @@ class TestGetDelegateSafetyAssertion:
         with pytest.raises(RuntimeError, match=r"get_delegate.*without credentials"):
             resolver.get_delegate("user@example.com")
 
-    def test_get_delegate_with_empty_email_returns_admin_chat(self):
-        """get_delegate('') returns the admin chat service without checking creds."""
+    @patch("slack_chat_migrator.services.user_resolver.get_gcp_service")
+    def test_get_delegate_with_empty_email_returns_admin_chat(self, mock_get_service):
+        """get_delegate('') returns a thread-local admin ChatAdapter."""
         resolver = _make_resolver()
+        mock_admin_svc = MagicMock(name="admin_service")
+        mock_get_service.return_value = mock_admin_svc
 
-        # Empty email should return the admin chat service directly
         result = resolver.get_delegate("")
-        assert result is resolver.chat
+        assert isinstance(result, ChatAdapter)
+        assert result._svc is mock_admin_svc

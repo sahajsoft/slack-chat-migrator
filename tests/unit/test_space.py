@@ -436,8 +436,8 @@ class TestAddUsersToSpace:
         (ch_dir / "2024-01-01.json").write_text(json.dumps(messages))
         return ch_dir
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_dry_run_processes_via_noop_service(self, mock_sleep, tmp_path):
+    @patch("slack_chat_migrator.services.spaces.historical_membership.get_gcp_service")
+    def test_dry_run_processes_via_noop_service(self, mock_gcp, tmp_path):
         """In dry run mode, API calls flow through the no-op service layer."""
         msgs = [{"type": "message", "user": "U001", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -453,11 +453,11 @@ class TestAddUsersToSpace:
 
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-        # With DI, dry-run calls flow through mock (DryRunChatService in prod)
-        chat.create_membership.assert_called()
+        create_mock = mock_gcp.return_value.spaces.return_value.members.return_value.create
+        create_mock.assert_called()
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_adds_user_with_membership_body(self, mock_sleep, tmp_path):
+    @patch("slack_chat_migrator.services.spaces.historical_membership.get_gcp_service")
+    def test_adds_user_with_membership_body(self, mock_gcp, tmp_path):
         """Users are added to the space with createTime and deleteTime."""
         msgs = [{"type": "message", "user": "U001", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -472,11 +472,9 @@ class TestAddUsersToSpace:
 
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-        # Verify that create_membership was called on the adapter
-        chat.create_membership.assert_called()
-
-        # Check the membership body
-        call_kwargs = chat.create_membership.call_args.kwargs
+        create_mock = mock_gcp.return_value.spaces.return_value.members.return_value.create
+        create_mock.assert_called()
+        call_kwargs = create_mock.call_args.kwargs
         assert call_kwargs["parent"] == "spaces/dev"
         body = call_kwargs["body"]
         assert body["member"]["name"] == "users/alice@example.com"
@@ -484,8 +482,7 @@ class TestAddUsersToSpace:
         assert "createTime" in body
         assert "deleteTime" in body
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_user_without_email_skipped(self, mock_sleep, tmp_path):
+    def test_user_without_email_skipped(self, tmp_path):
         """Users with no email mapping are skipped."""
         msgs = [{"type": "message", "user": "U999", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -501,8 +498,7 @@ class TestAddUsersToSpace:
         # create_membership should not be called since user has no email
         chat.create_membership.assert_not_called()
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_409_conflict_counted_as_success(self, mock_sleep, tmp_path):
+    def test_409_conflict_counted_as_success(self, tmp_path):
         """409 Conflict (user already in space) is treated as success."""
         msgs = [{"type": "message", "user": "U001", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -521,8 +517,7 @@ class TestAddUsersToSpace:
         # Should not raise
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_other_http_error_counted_as_failure(self, mock_sleep, tmp_path):
+    def test_other_http_error_counted_as_failure(self, tmp_path):
         """Non-409 HttpErrors count as failures but don't raise."""
         msgs = [{"type": "message", "user": "U001", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -541,8 +536,7 @@ class TestAddUsersToSpace:
         # Should not raise
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_unexpected_error_counted_as_failure(self, mock_sleep, tmp_path):
+    def test_unexpected_error_counted_as_failure(self, tmp_path):
         """Generic exceptions count as failures but don't raise."""
         msgs = [{"type": "message", "user": "U001", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -560,8 +554,8 @@ class TestAddUsersToSpace:
         # Should not raise
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_join_time_from_channel_join_event(self, mock_sleep, tmp_path):
+    @patch("slack_chat_migrator.services.spaces.historical_membership.get_gcp_service")
+    def test_join_time_from_channel_join_event(self, mock_gcp, tmp_path):
         """Explicit channel_join events are used as join times."""
         msgs = [
             {
@@ -584,12 +578,13 @@ class TestAddUsersToSpace:
 
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-        body = chat.create_membership.call_args.kwargs["body"]
+        create_mock = mock_gcp.return_value.spaces.return_value.members.return_value.create
+        body = create_mock.call_args.kwargs["body"]
         # The join time should use the channel_join timestamp (1699000000 -> 2023-11-03)
         assert "2023-11-03" in body["createTime"]
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_leave_time_from_channel_leave_event(self, mock_sleep, tmp_path):
+    @patch("slack_chat_migrator.services.spaces.historical_membership.get_gcp_service")
+    def test_leave_time_from_channel_leave_event(self, mock_gcp, tmp_path):
         """channel_leave events set the leave time."""
         msgs = [
             {
@@ -618,12 +613,12 @@ class TestAddUsersToSpace:
 
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-        body = chat.create_membership.call_args.kwargs["body"]
+        create_mock = mock_gcp.return_value.spaces.return_value.members.return_value.create
+        body = create_mock.call_args.kwargs["body"]
         # Leave time should use the channel_leave timestamp (1701000000 -> 2023-11-26)
         assert "2023-11-26" in body["deleteTime"]
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_external_user_tracked(self, mock_sleep, tmp_path):
+    def test_external_user_tracked(self, tmp_path):
         """External users are added to state.users.external_users."""
         msgs = [{"type": "message", "user": "U001", "ts": "1700000000.000000"}]
         self._setup_channel_dir(tmp_path, "dev", msgs)
@@ -656,8 +651,8 @@ class TestAddUsersToSpace:
 
         assert "U001" in state.progress.active_users_by_channel["dev"]
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_metadata_members_added_with_default_join_time(self, mock_sleep, tmp_path):
+    @patch("slack_chat_migrator.services.spaces.historical_membership.get_gcp_service")
+    def test_metadata_members_added_with_default_join_time(self, mock_gcp, tmp_path):
         """Members in metadata but not in messages get default join time."""
         # No messages at all in the channel
         ch_dir = tmp_path / "dev"
@@ -674,7 +669,8 @@ class TestAddUsersToSpace:
 
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
-        body = chat.create_membership.call_args.kwargs["body"]
+        create_mock = mock_gcp.return_value.spaces.return_value.members.return_value.create
+        body = create_mock.call_args.kwargs["body"]
         assert body["createTime"] == DEFAULT_FALLBACK_JOIN_TIME
 
     def test_malformed_file_in_channel_dir(self, tmp_path):
@@ -692,8 +688,8 @@ class TestAddUsersToSpace:
         # Should not raise
         add_users_to_space(ctx, state, chat, ur, "spaces/broken", "broken")
 
-    @patch("slack_chat_migrator.services.spaces.historical_membership.time.sleep")
-    def test_bot_user_ids_filtered_from_membership(self, mock_sleep, tmp_path):
+    @patch("slack_chat_migrator.services.spaces.historical_membership.get_gcp_service")
+    def test_bot_user_ids_filtered_from_membership(self, mock_gcp, tmp_path):
         """Bot user IDs in ctx.bot_user_ids are excluded from membership."""
         msgs = [
             {"type": "message", "user": "U001", "ts": "1700000000.000000"},
@@ -712,9 +708,10 @@ class TestAddUsersToSpace:
 
         add_users_to_space(ctx, state, chat, ur, "spaces/dev", "dev")
 
+        create_mock = mock_gcp.return_value.spaces.return_value.members.return_value.create
         # Only U001 should be added, B001 should be filtered out
-        assert chat.create_membership.call_count == 1
-        body = chat.create_membership.call_args.kwargs["body"]
+        assert create_mock.call_count == 1
+        body = create_mock.call_args.kwargs["body"]
         assert "alice@example.com" in body["member"]["name"]
         # B001 should not be in active_users
         assert "B001" not in state.progress.active_users_by_channel["dev"]

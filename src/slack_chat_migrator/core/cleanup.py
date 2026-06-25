@@ -16,6 +16,7 @@ from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
 
 from slack_chat_migrator.constants import (
+    HTTP_BAD_REQUEST,
     HTTP_FORBIDDEN,
     HTTP_RATE_LIMIT,
     HTTP_SERVER_ERROR_MIN,
@@ -175,11 +176,26 @@ def _check_checkpoint_spaces(
                 )
                 extras.append((space_name, space_info))
         except HttpError as e:
-            log_with_context(
-                logging.WARNING,
-                f"Could not check checkpoint space {space_name}: {e.resp.status}",
-                space_name=space_name,
-            )
+            if e.resp.status == HTTP_FORBIDDEN:
+                # 403 on a checkpoint space almost always means the space is in
+                # import mode but the admin was never added as a historical member,
+                # making it invisible via both list_spaces and get_space.  Add it
+                # to the cleanup list optimistically — _complete_single_space will
+                # call completeImport and handle any resulting error gracefully.
+                log_with_context(
+                    logging.WARNING,
+                    f"Checkpoint space {space_name} (channel={channel}) returned 403"
+                    " — likely stuck in import mode without admin membership."
+                    " Adding to cleanup list to attempt completeImport.",
+                    space_name=space_name,
+                )
+                extras.append((space_name, {"importMode": True}))
+            else:
+                log_with_context(
+                    logging.WARNING,
+                    f"Could not check checkpoint space {space_name}: {e.resp.status}",
+                    space_name=space_name,
+                )
         except (RefreshError, TransportError) as e:
             log_with_context(
                 logging.WARNING,
@@ -395,20 +411,35 @@ def _complete_single_space(
             space_name=space_name,
         )
     except HttpError as http_e:
-        log_with_context(
-            logging.ERROR,
-            f"HTTP error completing import for space {space_name}: {http_e}"
-            f" (Status: {http_e.resp.status})",
-            space_name=space_name,
-            error_code=http_e.resp.status,
-        )
-        if http_e.resp.status >= HTTP_SERVER_ERROR_MIN:
+        reason = (http_e._get_reason() or "").lower()
+        if http_e.resp.status == HTTP_BAD_REQUEST and (
+            "already" in reason or "not in import mode" in reason
+        ):
+            # Space was taken out of import mode by a prior run that completed
+            # import but then failed to add members (e.g. due to a crash or the
+            # Regional Access Boundary intermittent 500).  Fall through so that
+            # add_regular_members can finish the job.
             log_with_context(
-                logging.WARNING,
-                "Server error completing import - this might be a temporary issue",
+                logging.INFO,
+                f"Space {space_name} is already out of import mode"
+                " — proceeding to add regular members.",
                 space_name=space_name,
             )
-        return
+        else:
+            log_with_context(
+                logging.ERROR,
+                f"HTTP error completing import for space {space_name}: {http_e}"
+                f" (Status: {http_e.resp.status})",
+                space_name=space_name,
+                error_code=http_e.resp.status,
+            )
+            if http_e.resp.status >= HTTP_SERVER_ERROR_MIN:
+                log_with_context(
+                    logging.WARNING,
+                    "Server error completing import - this might be a temporary issue",
+                    space_name=space_name,
+                )
+            return
     except (RefreshError, TransportError) as e:
         log_with_context(
             logging.ERROR,

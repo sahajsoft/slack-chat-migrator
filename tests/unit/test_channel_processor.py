@@ -593,10 +593,11 @@ class TestProcessMessages:
 
         (ch_dir / "2024-01-01.json").write_text(json.dumps(messages))
 
-        # First call succeeds, rest fail
+        # First call succeeds, rest fail.
+        # With _MAX_SEND_RETRIES=2: initial pass (11) + retry 1 (10) + retry 2 (10) = 31 calls.
         mock_send.side_effect = [SendResult(message_name="spaces/S/messages/M1")] + [
             SendResult(error="test error")
-        ] * 10
+        ] * 30
 
         with patch.object(processor, "_discover_channel_resources"):
             _processed, _failed, had_errors = processor._process_messages(
@@ -1134,9 +1135,10 @@ class TestProgressTrackerIntegration:
         failed_events = [
             e for e in received if e.event_type == EventType.MESSAGE_FAILED
         ]
-        assert len(failed_events) == 1
-        assert failed_events[0].detail == "API error"
-        assert failed_events[0].channel == "general"
+        # Initial attempt + 2 retries (_MAX_SEND_RETRIES = 2) = 3 events
+        assert len(failed_events) == 3
+        assert all(e.detail == "API error" for e in failed_events)
+        assert all(e.channel == "general" for e in failed_events)
 
     @patch(
         "slack_chat_migrator.core.channel_processor.should_process_channel",
