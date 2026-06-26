@@ -156,11 +156,17 @@ def _collect_user_membership_data(
         the set of user IDs considered currently active.
     """
     ch_dir = ctx.export_root / channel
-    user_membership, _ = _scan_message_files_for_membership(ch_dir, channel)
+    user_membership, message_active_users = _scan_message_files_for_membership(
+        ch_dir, channel
+    )
 
-    # Channel metadata is the authoritative source for active members
+    # Channel metadata is the authoritative source for active members.
+    # Some workspace exports have channels.json with members: [] — in that case
+    # fall back to message-derived active users (anyone who posted and hasn't left).
     meta = ctx.channels_meta.get(channel, {})
     active_users = _apply_channel_metadata_members(meta, user_membership)
+    if not active_users:
+        active_users = message_active_users
 
     # Filter out bot user IDs that were excluded by ignore_bots.
     # These have no email mapping and would cause ERROR logs in the membership pipeline.
