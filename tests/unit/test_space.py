@@ -873,6 +873,37 @@ class TestAddRegularMembers:
         # Verify the fallback loaded the members
         assert state.progress.active_users_by_channel["dev"] == ["U001", "U002"]
 
+    @patch(
+        "slack_chat_migrator.services.spaces.regular_membership.collect_active_users_for_channel"
+    )
+    @patch("slack_chat_migrator.services.spaces.regular_membership.time.sleep")
+    def test_fallback_scans_messages_when_channels_json_members_empty(
+        self, mock_sleep, mock_collect, tmp_path
+    ):
+        """Private channels have members:[] in channels.json — fall back to message scan."""
+        channels_data = [{"name": "vipanan-support", "members": []}]
+        (tmp_path / "channels.json").write_text(json.dumps(channels_data))
+
+        ctx, state, chat, ur = _make_membership_deps(
+            user_map={"U001": "alice@example.com"},
+            export_root=tmp_path,
+        )
+        state.progress.active_users_by_channel = {}
+
+        # Simulate collect_active_users_for_channel populating the dict
+        def _populate(c, s, ch):
+            s.progress.active_users_by_channel[ch] = {"U001"}
+
+        mock_collect.side_effect = _populate
+        ur.get_internal_email.side_effect = lambda uid, email: email
+        ur.is_external_user.return_value = False
+        chat.list_memberships.return_value = {"memberships": []}
+
+        add_regular_members(ctx, state, chat, ur, None, "spaces/dev", "vipanan-support")
+
+        mock_collect.assert_called_once_with(ctx, state, "vipanan-support")
+        chat.create_membership.assert_called_once()
+
     @patch("slack_chat_migrator.services.spaces.regular_membership.time.sleep")
     def test_admin_removed_if_not_in_channel(self, mock_sleep):
         """Workspace admin is removed from space if not in the original channel."""

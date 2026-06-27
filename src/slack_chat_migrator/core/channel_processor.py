@@ -852,9 +852,13 @@ class ChannelProcessor:
             channel=channel,
         )
 
-        if not channel_had_errors or not is_newly_created:
-            # For existing spaces, we always try to update members even if there were message errors
-            # For new spaces, only add members if import completed successfully
+        # Only skip member addition if import mode itself wasn't completed —
+        # message/file/historical-membership errors are irrelevant here.
+        # A space stuck in import mode cannot receive regular memberships.
+        import_stuck = is_newly_created and any(
+            s == space for s, _ in self.state.errors.incomplete_import_spaces
+        )
+        if not import_stuck:
             try:
                 add_regular_members(
                     self.ctx,
@@ -900,7 +904,8 @@ class ChannelProcessor:
         else:
             log_with_context(
                 logging.WARNING,
-                f"Skipping member addition for newly created space {space} due to import completion errors",
+                f"Skipping member addition for space {space} — import mode was not completed, "
+                f"regular memberships cannot be added while a space is in import mode",
                 channel=channel,
             )
 

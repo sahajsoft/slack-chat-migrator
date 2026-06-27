@@ -18,6 +18,9 @@ from slack_chat_migrator.constants import (
     HTTP_FORBIDDEN,
     HTTP_NOT_FOUND,
 )
+from slack_chat_migrator.services.spaces.historical_membership import (
+    collect_active_users_for_channel,
+)
 from slack_chat_migrator.utils.logging import log_with_context
 
 if TYPE_CHECKING:
@@ -549,6 +552,16 @@ def add_regular_members(
                 f"Failed to load channel members from channels.json: {e}",
                 channel=channel,
             )
+
+    # channels.json for private channels often has members: [] — fall back to
+    # scanning message files exactly as the historical-membership step does.
+    if not state.progress.active_users_by_channel.get(channel):
+        log_with_context(
+            logging.INFO,
+            f"channels.json has empty members for {channel}, falling back to message-derived active users",
+            channel=channel,
+        )
+        collect_active_users_for_channel(ctx, state, channel)
 
     # If we still don't have active users, we can't proceed
     if channel not in state.progress.active_users_by_channel:

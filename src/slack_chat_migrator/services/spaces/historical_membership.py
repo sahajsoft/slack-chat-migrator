@@ -479,6 +479,32 @@ def _add_historical_members_batch(
     return added_count, failed_count
 
 
+def collect_active_users_for_channel(
+    ctx: MigrationContext,
+    state: MigrationState,
+    channel: str,
+) -> set[str]:
+    """Derive the active user set for a channel by scanning its message files.
+
+    This is the same logic used during the historical-member import step, exposed
+    as a public helper so that the regular-membership path can call it when
+    ``state.progress.active_users_by_channel`` has not been populated (e.g. during
+    ``--complete`` reruns or resumes on a fresh state).
+
+    Populates ``state.progress.active_users_by_channel[channel]`` as a side effect.
+
+    Args:
+        ctx: Immutable migration context.
+        state: Mutable migration state.
+        channel: Slack channel name.
+
+    Returns:
+        Set of active Slack user IDs for the channel.
+    """
+    _, active_users = _collect_user_membership_data(ctx, state, channel)
+    return active_users
+
+
 def add_users_to_space(
     ctx: MigrationContext,
     state: MigrationState,

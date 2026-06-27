@@ -858,15 +858,29 @@ class TestAddMembers:
         assert result is True
 
     @patch("slack_chat_migrator.core.channel_processor.add_regular_members")
-    def test_skip_for_new_space_with_errors(self, mock_add):
-        """Skips member addition for a newly created space that had import errors."""
+    def test_skip_for_new_space_stuck_in_import_mode(self, mock_add):
+        """Skips member addition only when the space is still stuck in import mode."""
         processor = _make_processor()
+        # Mark the space as stuck in import mode (complete_import itself failed)
+        processor.state.errors.incomplete_import_spaces.append(("spaces/S1", "general"))
 
         result = processor._add_members("spaces/S1", "general", True, True)
 
-        # channel_had_errors=True AND is_newly_created=True => skip
         mock_add.assert_not_called()
         assert result is True
+
+    @patch("slack_chat_migrator.core.channel_processor.add_regular_members")
+    def test_adds_members_for_new_space_with_message_errors(self, mock_add):
+        """Adds members even when there were message/file errors, as long as import completed."""
+        processor = _make_processor()
+        # channel_had_errors=True from message failures, but space is NOT in incomplete_import_spaces
+        # (import completed successfully)
+
+        result = processor._add_members("spaces/S1", "general", True, True)
+
+        # Members must be added — import mode completed, errors were unrelated message failures
+        mock_add.assert_called_once()
+        assert result is True  # channel_had_errors passthrough (prior message errors)
 
 
 # ---------------------------------------------------------------------------
